@@ -1,0 +1,207 @@
+/* Home course cards and list rows.
+   Extracted from App.jsx (SD-6), where it lived as the `css3` template
+   literal. Verbatim — no rules were merged, reordered or renamed, so this
+   commit changes where the CSS lives and nothing about what it does. */
+
+/* ── Home course cards ── */
+.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:28px;}
+.course-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow);border-inline-start:3px solid transparent;overflow:hidden;}
+.course-card-compact{display:flex;align-items:center;gap:12px;padding:12px 16px;cursor:pointer;transition:background 0.1s;user-select:none;}
+.course-card-compact:hover{background:var(--surface2);}
+.course-card-left{display:flex;align-items:center;gap:10px;flex:1;min-width:0;}
+.course-card-name{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.course-card-pills{display:flex;gap:5px;flex-shrink:0;}
+.course-card-pill{font-family:var(--font-mono);font-size:9px;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);}
+.course-card-pill.urgent{background:var(--danger-tint);color:var(--danger);border-color:var(--danger-tint-border);}
+.course-card-chevron{font-size:10px;color:var(--muted2);transition:transform 0.2s;flex-shrink:0;margin-inline-start:6px;}
+.course-card-chevron.open{transform:rotate(90deg);}
+.course-card-detail{border-top:1px solid var(--border);padding:12px 16px 14px;background:var(--surface2);}
+.course-card-next{font-size:12px;color:var(--muted);line-height:1.7;}
+.course-card-actions{display:flex;gap:8px;margin-top:10px;}
+
+/* ── Exam cards ── */
+.exam-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;box-shadow:var(--shadow);border-inline-start:4px solid transparent;overflow:hidden;}
+.exam-card.done{opacity:0.5;}
+.exam-card-header{display:flex;align-items:flex-start;gap:12px;padding:16px 18px;cursor:pointer;user-select:none;}
+.exam-card-header:hover{background:rgba(0,0,0,0.018);}
+.exam-card-header-info{flex:1;min-width:0;}
+.exam-card-title{font-size:15px;font-weight:600;margin-bottom:6px;}
+.exam-card-title.done{text-decoration:line-through;color:var(--muted);}
+.exam-card-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.exam-card-body{padding:0 18px 18px;border-top:1px solid var(--border);}
+.exam-card-notes{font-size:12px;color:var(--muted);line-height:1.5;padding-top:12px;margin-bottom:10px;}
+.exam-header-progress{display:flex;align-items:center;gap:8px;margin-top:7px;}
+.exam-header-progress-track{flex:1;height:4px;background:var(--border);border-radius:99px;overflow:hidden;max-width:120px;}
+.exam-header-progress-fill{height:100%;border-radius:99px;transition:width 0.3s;}
+.exam-header-progress-txt{font-family:var(--font-mono);font-size:10px;color:var(--muted2);white-space:nowrap;}
+.study-plan-bar{background:var(--surface2);border-radius:4px;padding:10px 12px;margin:12px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.study-plan-label{font-family:var(--font-mono);font-size:10px;color:var(--muted);letter-spacing:0.05em;}
+.study-plan-date{font-family:var(--font-mono);font-size:11px;font-weight:500;}
+.difficulty-pill{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-family:var(--font-mono);font-size:10px;font-weight:500;cursor:pointer;border:1px solid transparent;transition:all 0.1s;}
+.topics-section{padding-top:8px;}
+.topics-section-header{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+.topics-section-label{font-family:var(--font-mono);font-size:10px;letter-spacing:0.12em;color:var(--muted);text-transform:uppercase;white-space:nowrap;}
+.topics-big-progress-wrap{flex:1;height:6px;background:var(--border);border-radius:99px;overflow:hidden;}
+.topics-big-progress-bar{height:100%;border-radius:99px;transition:width 0.35s;}
+.topics-big-progress-txt{font-family:var(--font-mono);font-size:11px;color:var(--muted);white-space:nowrap;}
+.topic-item{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:5px;margin-bottom:4px;cursor:pointer;transition:background 0.1s;}
+.topic-item:hover{background:var(--surface2);}
+.topic-check{width:20px;height:20px;border:2px solid var(--border2);border-radius:4px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+.topic-check:hover{border-color:var(--text);}
+.topic-check.checked{background:var(--text);border-color:var(--text);}
+.topic-check.checked::after{content:'';display:block;width:5px;height:8px;border:2px solid var(--bg);border-top:none;border-left:none;transform:rotate(45deg) translate(-1px,-1px);}
+.topic-title{font-size:14px;flex:1;line-height:1.4;}
+.topic-title.done{text-decoration:line-through;color:var(--muted2);}
+.topic-del{opacity:0;background:none;border:none;color:var(--muted2);cursor:pointer;font-size:16px;padding:0 4px;transition:opacity 0.1s,color 0.1s;}
+.topic-item:hover .topic-del{opacity:1;}
+.topic-del:hover{color:var(--danger);}
+.topics-empty{font-family:var(--font-mono);font-size:11px;color:var(--muted2);padding:14px 12px;text-align:center;border:1px dashed var(--border);border-radius:5px;margin-bottom:12px;}
+.topic-add-row{display:flex;gap:6px;margin-top:6px;}
+.topic-add-row input{font-size:13px;padding:9px 12px;}
+.topic-add-btn{background:var(--text);color:var(--bg);border:none;padding:9px 16px;font-family:var(--font-mono);font-size:10px;border-radius:4px;cursor:pointer;white-space:nowrap;transition:opacity 0.1s;}
+.topic-add-btn:hover{opacity:0.8;}
+
+/* v1.15 Item 1 — the Plan tab's own month grid and agenda lived here. Both
+   are gone; the Calendar sub-tab is the one calendar. This is its way in. */
+.plan-open-cal{margin-bottom:14px;}
+
+.nextup-unlock{display:flex;gap:16px;align-items:flex-start;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:24px;box-shadow:var(--shadow);}
+.nextup-unlock-icon{font-size:28px;color:var(--border2);flex-shrink:0;margin-top:2px;}
+.nextup-unlock-body{flex:1;}
+.nextup-unlock-title{font-family:var(--font-display);font-size:17px;font-weight:500;color:var(--text);margin-bottom:8px;line-height:1.35;}
+.nextup-unlock-sub{font-size:13px;color:var(--muted);line-height:1.6;margin-bottom:16px;}
+.quick-add-box{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:24px;box-shadow:var(--shadow);}
+/* ── Course detail (v1.9 Item 14a) ───────────────────────────────────────────
+   The middle pane of the desktop three-pane layout. The sidebar is pane one
+   and has existed since v1.0; this is what clicking a course in it was always
+   supposed to open. */
+.cdv-head{display:flex;align-items:flex-start;gap:14px;background:var(--surface);border:1px solid var(--border);border-inline-start:3px solid var(--border2);border-radius:6px;padding:16px 18px;margin-bottom:16px;box-shadow:var(--shadow);}
+.cdv-head-main{flex:1;min-width:0;}
+.cdv-name{font-family:var(--font-display);font-size:22px;font-weight:500;line-height:1.2;}
+.cdv-sub{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px;font-family:var(--font-mono);font-size:10px;letter-spacing:0.06em;color:var(--muted2);text-transform:uppercase;}
+/* auto-fit rather than four fixed columns: at the tablet width four stat
+   blocks each get ~140px and the labels wrap to three lines. */
+.cdv-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:22px;}
+.cdv-stat{background:var(--surface);padding:12px 14px;}
+.cdv-stat-value{font-family:var(--font-display);font-size:21px;line-height:1.1;}
+.cdv-stat-label{font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted2);margin-top:4px;}
+.cdv-aside{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:14px 16px;box-shadow:var(--shadow);min-width:0;}
+.cdv-aside-label{font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted2);margin-bottom:10px;}
+.cdv-aside-empty{font-size:12px;color:var(--muted2);font-style:italic;}
+.cdv-session{padding:8px 0;border-top:1px solid var(--border);}
+.cdv-session:first-of-type{border-top:0;}
+.cdv-session-when{font-size:12px;}
+.cdv-session-len{font-family:var(--font-mono);font-size:10px;color:var(--muted2);margin-top:2px;}
+@media(min-width:1201px){
+  .cdv-split{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start;}
+  .cdv-aside{position:sticky;top:18px;}
+}
+@media(min-width:1600px){
+  .cdv-split{grid-template-columns:minmax(0,1fr) 340px;}
+}
+
+@media(max-width:768px){
+  .home-grid{grid-template-columns:1fr;}
+  .quick-add-box .input-row{flex-direction:row;}
+  .quick-add-box .input-row select{max-width:110px;}
+  .study-plan-bar{flex-direction:column;align-items:flex-start;gap:6px;}
+  .topic-item{padding:12px 10px;}
+  .cdv-head{padding:14px;}
+  .cdv-name{font-size:19px;}
+}
+
+/* ── Referral prompt (v1.11 Item 8) ────────────────────────────────────────
+   Corner card, not a modal — see ReferralPrompt.jsx for why. Sits where the
+   flash toast sits on desktop and clears the mobile tab bar the same way, so
+   it never covers navigation. Existing tokens only; nothing new is defined
+   here, so an alternate theme's token set restyles it for free. */
+.ref-card{position:fixed;bottom:24px;inset-inline-end:24px;z-index:210;width:300px;max-width:calc(100vw - 32px);
+  background:var(--surface);border:1px solid var(--border2);border-radius:6px;box-shadow:var(--shadow-md);
+  padding:16px 18px 14px;animation:fadeup 0.24s var(--ease-settle);}
+.ref-eyebrow{font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted2);}
+.ref-title{font-family:var(--font-display);font-size:16px;line-height:1.3;margin:6px 0 12px;}
+.ref-options{display:flex;flex-direction:column;gap:6px;}
+.ref-option{text-align:start;font-family:var(--font-sans);font-size:13px;color:var(--text);
+  background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px 11px;cursor:pointer;
+  transition:background 0.1s,border-color 0.1s;}
+.ref-option:hover{background:var(--surface2);border-color:var(--border2);}
+.ref-dismiss{display:block;margin:11px 0 0 auto;background:none;border:none;cursor:pointer;
+  font-family:var(--font-mono);font-size:10px;letter-spacing:0.06em;color:var(--muted);padding:2px 0;}
+.ref-dismiss:hover{color:var(--text);}
+.ref-thanks{font-family:var(--font-display);font-size:15px;padding:6px 0;}
+@media(max-width:768px){
+  /* Same clearance the flash toast uses, for the same reason: the bottom tab
+     bar plus the home-indicator inset. */
+  .ref-card{bottom:calc(72px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom)));inset-inline-end:14px;inset-inline-start:14px;width:auto;}
+}
+
+/* ── Storage alert (v1.13 Item 1a) ──────────────────────────────────────────
+   Shown only when a critical local write has failed, so it is allowed to be
+   louder than anything else on the page — at the moment it appears, it is the
+   most important thing on the screen by a wide margin.
+
+   Uses the danger tokens rather than the warning ones deliberately. This is
+   not "heads up"; it is "your data will not survive closing the app". The
+   tokens resolve per theme, so the panel deepens rather than glows on the
+   dark modes and reads as a rose correction on Slate. */
+.storage-alert{
+  background:var(--danger-soft);
+  border:1px solid var(--danger-soft-border);
+  border-inline-start:3px solid var(--danger);
+  border-radius:5px;
+  padding:14px 16px;
+  margin-bottom:18px;
+}
+.storage-alert-head{
+  font-family:var(--font-mono);
+  font-size:10px;
+  letter-spacing:0.14em;
+  text-transform:uppercase;
+  color:var(--danger);
+  margin-bottom:8px;
+}
+.storage-alert-body{font-size:13px;line-height:1.55;color:var(--text);margin-bottom:8px;}
+/* The consequence, set apart from the cause. A user who reads one line should
+   read the one that says what they stand to lose. */
+.storage-alert-stakes{font-weight:500;}
+.storage-alert-usage{
+  font-family:var(--font-mono);
+  font-size:10.5px;
+  color:var(--muted);
+  margin-bottom:12px;
+}
+.storage-alert-actions{display:flex;gap:8px;flex-wrap:wrap;}
+
+/* ── F-Droid update note (v1.16, #67) ───────────────────────────────────────
+   News, not an alarm, so it borrows nothing from the warning or danger sets:
+   a paper card with the accent as a margin rule, the referral card's type
+   (mono eyebrow, display title), and the version change written as a
+   correction — old struck through, new in ink. Existing tokens only, so every
+   theme restyles it. Inline in `.content` like the storage alert, so it
+   never covers navigation or the corner the referral card uses. */
+.upd-note{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-inline-start:3px solid var(--accent);
+  border-radius:5px;
+  box-shadow:var(--shadow);
+  padding:13px 16px 12px;
+  margin-bottom:18px;
+  animation:fadeup 0.24s var(--ease-settle);
+}
+.upd-note-eyebrow{font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted2);}
+.upd-note-title{font-family:var(--font-display);font-size:16px;line-height:1.3;margin:5px 0 4px;color:var(--text);}
+.upd-note-versions{display:flex;align-items:baseline;gap:8px;font-family:var(--font-mono);font-size:11px;color:var(--muted);margin-bottom:11px;}
+.upd-note-versions s{text-decoration-thickness:1px;}
+.upd-note-new{color:var(--accent);font-weight:500;}
+.upd-note-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+.upd-note-actions .btn{text-decoration:none;display:inline-block;}
+.upd-note-later{background:none;border:none;cursor:pointer;padding:2px 0;
+  font-family:var(--font-mono);font-size:10px;letter-spacing:0.06em;color:var(--muted);}
+.upd-note-later:hover{color:var(--text);}
+@media (prefers-reduced-motion: reduce){ .upd-note{animation:none;} }
+
+/* v1.13 (#45) — the exam edit affordance. Muted until hover, like the course
+   row's own edit button, so a card full of controls does not shout. */
+.exam-edit-btn{background:none;border:none;color:var(--muted2);cursor:pointer;padding:2px 5px;display:flex;align-items:center;transition:color 0.1s;}
+.exam-edit-btn:hover{color:var(--text);}

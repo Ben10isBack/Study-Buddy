@@ -1,0 +1,524 @@
+// LWW merge utilities for syncing Supabase rows into the local reducer state.
+//
+// Convention:
+//   - Local entities use camelCase: { id, subjectId, updatedAt, deletedAt, ... }
+//   - DB rows use snake_case:       { id, subject_id, updated_at, deleted_at, ... }
+// These helpers translate one direction (DB → local) and reconcile via LWW
+// using updated_at / updatedAt timestamps.
+
+import { normalizeDueTime } from './dueAt.js';
+
+function newer(remoteIso, localIso) {
+  if (!localIso) return true;
+  if (!remoteIso) return false;
+  // Compare as instants, not raw strings. Local updatedAt is Date.toISOString()
+  // (`...sssZ`); remote updated_at is Postgres timestamptz text (`...+00:00`,
+  // variable-length fractional seconds, no `Z`). Lexicographic `>` only tracks
+  // real order when the date/seconds differ — for two writes in the same second
+  // the differing suffix can flip the result and clobber a newer edit.
+  return new Date(remoteIso).getTime() > new Date(localIso).getTime();
+}
+
+// v1.16 (limecore#27, registry P6) — delete wins. A remote tombstone beats a
+// local live row even when the local stamp is newer: the delete happened, and
+// an edit that raced it (made here without having seen it) must not keep the
+// row alive on this device while every other device has dropped it. The
+// server enforces the same rule, so the edit's own push cannot un-delete the
+// row there either. Used by the three collections that keep tombstones in
+// local state; the others already drop a tombstoned row outright in
+// `mergeList`. A deliberate revival arrives as a newer LIVE remote row and is
+// ordinary last-writer-wins, so it is unaffected.
+function remoteWins(remote, local) {
+  return newer(remote.updatedAt, local.updatedAt) || (Boolean(remote.deletedAt) && !local.deletedAt);
+}
+
+/**
+ * DB subject row → local-shaped object.
+ *
+ * v1.0.3: `color` is now a synced DB column (was local-only in v1.0.2). LWW on
+ * the whole row by updated_at — including color. Nexus-Command-Center also
+ * writes color, so the newer side wins. If remote color is null and local has
+ * one, the local color is preserved (we don't clobber a useful value with null
+ * unless the remote row is genuinely newer AND explicitly set color=null).
+ *
+ * `notes` stays local-only (not a Nexus-known field).
+ */
+function mergeSubject(localCourse, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    name: remoteRow.name,
+    credits: remoteRow.credits ?? 1,
+    semester: remoteRow.semester ?? null,
+    // v1.5 — school_year groups periods for the history view (nullable).
+    schoolYear: remoteRow.school_year ?? null,
+    color: remoteRow.color || null,
+    // v1.2 — Null means active; ISO string means archived at that moment.
+    archivedAt: remoteRow.archived_at || null,
+    // v1.18.1 (StudyDesk#163) — when it was last archived or restored.
+    archivedEditedAt: remoteRow.archived_edited_at || null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localCourse) {
+    // New subject discovered remotely — use remote color if set, gray default otherwise.
+    return { ...remote, color: remote.color || '#7a7570', notes: [] };
+  }
+  const merged = remoteWins(remote, localCourse)
+    ? {
+      ...localCourse,
+      ...remote,
+      // If remote is newer but didn't include a color value, fall back to local
+      // (avoids wiping a user's color picker choice just because NCC sent an
+      // edit that didn't touch color).
+      color: remote.color || localCourse.color,
+      notes: localCourse.notes ?? [],
+    }
+    : localCourse;
+  return withNewerArchive(merged, remote, localCourse);
+}
+
+// v1.18.1 (StudyDesk#163) — the archive is last-writer-wins on its own stamp,
+// as on the server: an archive or restore no longer moves `updatedAt`, so the
+// row's winner says nothing about which archive state is newer. A REMOTE row
+// with no archive stamp dates its archive by `updated_at`, which is what
+// every writer that sends no stamp (older builds, NCC, a server without the
+// column) carries it on. Taking a missing stamp as "oldest" instead left a
+// device on its own stale archive for good once anyone else restored the
+// course that way. A LOCAL copy without a stamp has not archived or restored
+// it here, so it never outranks the remote. Equal times: the row's winner
+// keeps its archive, as before. A local archive older than a remote content
+// edit shows the remote state until its queued push lands and is pulled back.
+function withNewerArchive(merged, remote, local) {
+  const ms = (iso) => (iso ? new Date(iso).getTime() : -Infinity);
+  const r = ms(remote.archivedEditedAt || remote.updatedAt);
+  const l = ms(local.archivedEditedAt);
+  if (r === l) return merged;
+  const src = r > l ? remote : local;
+  if ((merged.archivedAt || null) === (src.archivedAt || null)
+    && (merged.archivedEditedAt || null) === (src.archivedEditedAt || null)) return merged;
+  return { ...merged, archivedAt: src.archivedAt || null, archivedEditedAt: src.archivedEditedAt || null };
+}
+
+function mergeGrade(localGrade, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    subjectId: remoteRow.subject_id,
+    grade: Number(remoteRow.grade),
+    weight: remoteRow.weight != null ? Number(remoteRow.weight) : 1,
+    date: remoteRow.date || null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localGrade) return remote;
+  if (remoteWins(remote, localGrade)) return remote;
+  return localGrade;
+}
+
+function mergeSession(localSession, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    subjectId: remoteRow.subject_id || null,
+    startedAt: remoteRow.started_at,
+    durationMinutes: remoteRow.duration_minutes,
+    notes: remoteRow.notes || null,
+    // v1.3 (BUG-22) — focus_rating is nullable; older rows have none.
+    focusRating: remoteRow.focus_rating ?? null,
+    // v1.4 — AI debrief fields; null on rows logged without a debrief.
+    aiDebriefRaw: remoteRow.ai_debrief_raw ?? null,
+    aiSubjectCovered: remoteRow.ai_subject_covered ?? null,
+    aiComprehension: remoteRow.ai_comprehension ?? null,
+    aiConfusionFlags: Array.isArray(remoteRow.ai_confusion_flags) ? remoteRow.ai_confusion_flags : null,
+    aiSessionSummary: remoteRow.ai_session_summary ?? null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localSession) return remote;
+  if (remoteWins(remote, localSession)) return remote;
+  return localSession;
+}
+
+// v1.7 (StudyDesk#6) — assignments, exams and manual to-dos. Local shape uses
+// `courseId` where the DB says `subject_id`; everything else is a straight
+// rename. Same LWW rule as the three above: whole-row replace when remote wins.
+
+function mergeAssignment(localA, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    courseId: remoteRow.subject_id,
+    title: remoteRow.title,
+    type: remoteRow.type || null,
+    // The local UI binds these to text inputs, which cannot hold null without
+    // React flipping the field to uncontrolled — keep the empty-string shape
+    // the reducer already creates.
+    dueDate: remoteRow.due_date || '',
+    // v1.14 Item 5. `normalizeDueTime` turns the column's `HH:MM:SS` into the
+    // `HH:MM` an <input type="time"> can hold, and it also absorbs the column
+    // simply not being there — a pull taken before the migration lands, or a
+    // row written by an older client, both arrive as undefined and mean the
+    // same thing: no time given.
+    dueTime: normalizeDueTime(remoteRow.due_time),
+    notes: remoteRow.notes || '',
+    done: Boolean(remoteRow.done),
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localA) return remote;
+  if (newer(remote.updatedAt, localA.updatedAt)) return remote;
+  return localA;
+}
+
+function mergeExam(localE, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    courseId: remoteRow.subject_id,
+    title: remoteRow.title,
+    dueDate: remoteRow.due_date || '',
+    difficulty: remoteRow.difficulty || 'medium',
+    notes: remoteRow.notes || '',
+    done: Boolean(remoteRow.done),
+    // Topics travel as jsonb. Guard the shape — the local UI maps over this
+    // unconditionally, so a null from a malformed row would crash the view.
+    topics: Array.isArray(remoteRow.topics) ? remoteRow.topics : [],
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localE) return remote;
+  if (newer(remote.updatedAt, localE.updatedAt)) return remote;
+  return localE;
+}
+
+function mergeAction(localA, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    courseId: remoteRow.subject_id || null,
+    text: remoteRow.text,
+    bucket: remoteRow.bucket || 'today',
+    done: Boolean(remoteRow.done),
+    // Only manually created to-dos are ever pushed, so anything arriving from
+    // the cloud is by definition manual. Stamping these explicitly keeps them
+    // from being mistaken for the derived suggestions the Actions view
+    // computes on every render.
+    suggested: false,
+    sourceId: null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localA) return remote;
+  if (newer(remote.updatedAt, localA.updatedAt)) return remote;
+  return localA;
+}
+
+// v1.10 — planned sessions, academic terms, the weekly timetable, and
+// assignment attachments. All four follow the assignments/exams/actions
+// pattern rather than the courses/grades/sessions one: remote deletes drop the
+// row locally instead of leaving a tombstone. Same reasoning — every render
+// path for these is new and expects a live list, and a tombstone that one call
+// site forgets to filter puts a deleted lesson back on someone's timetable.
+
+function mergePlannedSession(localP, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    subjectId: remoteRow.subject_id || null,
+    startsAt: remoteRow.starts_at,
+    durationMinutes: remoteRow.duration_minutes,
+    title: remoteRow.title || '',
+    notes: remoteRow.notes || '',
+    // The link to the study session that actually happened. Null is the normal
+    // state — most planned blocks are still owed.
+    fulfilledBy: remoteRow.fulfilled_by || null,
+    dismissedAt: remoteRow.dismissed_at || null,
+    // v1.14 Item 7a. Absent means a one-off, which is what every pre-v1.14
+    // planned block is.
+    seriesId: remoteRow.series_id || null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localP) return remote;
+  if (newer(remote.updatedAt, localP.updatedAt)) return remote;
+  return localP;
+}
+
+function mergeTerm(localT, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    parentId: remoteRow.parent_id || null,
+    level: remoteRow.level,
+    name: remoteRow.name,
+    // Bound to date inputs, which cannot hold null without React flipping the
+    // field to uncontrolled — same empty-string shape the reducer creates.
+    startsOn: remoteRow.starts_on || '',
+    endsOn: remoteRow.ends_on || '',
+    position: Number(remoteRow.position) || 0,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localT) return remote;
+  if (newer(remote.updatedAt, localT.updatedAt)) return remote;
+  return localT;
+}
+
+function mergeTimetableEntry(localE, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    termId: remoteRow.term_id,
+    subjectId: remoteRow.subject_id || null,
+    title: remoteRow.title || '',
+    // smallint over the wire; the weekday comparison in `lessonsOn` is `===`
+    // against `Date.getDay()`, so a string "1" would silently match nothing.
+    weekday: Number(remoteRow.weekday),
+    startsAt: remoteRow.starts_at,
+    endsAt: remoteRow.ends_at,
+    room: remoteRow.room || '',
+    color: remoteRow.color || null,
+    // v1.13 — `?? null` rather than `|| null`: 0 is not a valid parity, but
+    // reading it through `||` would be a silent coercion waiting for the day
+    // someone adds a third value.
+    weekParity: remoteRow.week_parity ?? null,
+    // v1.14 Item 6a. Absent — an older row, or a pull taken before the
+    // migration — means "not part of a set", which is what those rows are.
+    seriesId: remoteRow.series_id || null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localE) return remote;
+  if (newer(remote.updatedAt, localE.updatedAt)) return remote;
+  return localE;
+}
+
+function mergeAttachment(localA, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    assignmentId: remoteRow.assignment_id,
+    storagePath: remoteRow.storage_path,
+    fileName: remoteRow.file_name,
+    mimeType: remoteRow.mime_type || null,
+    sizeBytes: remoteRow.size_bytes != null ? Number(remoteRow.size_bytes) : null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localA) return remote;
+  if (newer(remote.updatedAt, localA.updatedAt)) return remote;
+  return localA;
+}
+
+function mergeCommitment(localC, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    title: remoteRow.title,
+    color: remoteRow.color || null,
+    // Null is meaningful here — it is the one-off/weekly switch — so it must
+    // survive as null rather than being coerced to 0, which is Sunday.
+    weekday: remoteRow.weekday === null || remoteRow.weekday === undefined ? null : Number(remoteRow.weekday),
+    startsOn: remoteRow.starts_on || '',
+    endsOn: remoteRow.ends_on || '',
+    // v1.14 Item 7b. Absent — an older row, or a pull taken before the
+    // migration — reads as every week, which is what those rows mean.
+    intervalWeeks: remoteRow.interval_weeks == null ? null : Number(remoteRow.interval_weeks),
+    startTime: remoteRow.start_time,
+    endTime: remoteRow.end_time,
+    notes: remoteRow.notes || '',
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localC) return remote;
+  if (newer(remote.updatedAt, localC.updatedAt)) return remote;
+  return localC;
+}
+
+/**
+ * Apply a full remote pull to the reducer state. Returns a new state object.
+ *
+ * @param {object} state Current reducer state.
+ * @param {{subjects:Array, grades:Array, sessions:Array, assignments:Array, exams:Array, actions:Array}} remote
+ */
+// Attendance is merged on the NATURAL KEY, not on `id`, and it is the only
+// list that is.
+//
+// v1.13 review, blocker A4. The server's identity for an attendance fact is
+// (user_id, timetable_entry_id, date) — a total unique index, see
+// supabase/migrations/20260904_lesson_attendance_natural_key.sql. The client's
+// uuid is only a local handle until the first successful push, and two devices
+// marking the same lesson offline mint different ones for the same fact.
+//
+// Keying the merge on `id` therefore kept BOTH: device A's local `A1` survived
+// as a local-only row while the server's row arrived under whatever id was
+// inserted first, and the lesson was counted twice in the percentage — the
+// exact duplicate the natural key exists to prevent. Reconcile then saw local
+// `A1` missing remotely and re-enqueued it, which (while `id` was still in the
+// upsert payload) flipped the server row's primary key back. Permanent
+// cross-device ping-pong.
+//
+// The rule here: the server is the authority on identity. A remote row REPLACES
+// whatever local row shares its natural key, adopting the remote id, whatever
+// the local id was. LWW on `updated_at` still decides the CONTENT; this only
+// decides which row is which.
+//
+// Local-only rows — marked offline, never pushed — have no remote counterpart
+// and are preserved untouched, which is what keeps an offline mark alive until
+// the outbox drains.
+function attendanceNaturalKey(row) {
+  return `${row.timetableEntryId ?? row.timetable_entry_id}::${row.date}`;
+}
+
+export function mergeAttendanceList(localList, remoteRows) {
+  const byKey = new Map();
+  for (const row of localList || []) {
+    if (row) byKey.set(attendanceNaturalKey(row), row);
+  }
+  for (const remoteRow of remoteRows || []) {
+    const key = attendanceNaturalKey(remoteRow);
+    if (remoteRow.deleted_at) {
+      // A cleared lesson. Drop it whatever the local id was — including the
+      // case where the local row carries a different uuid for the same fact,
+      // which is precisely what keying on `id` failed to do.
+      byKey.delete(key);
+      continue;
+    }
+    byKey.set(key, mergeAttendance(byKey.get(key), remoteRow));
+  }
+  return Array.from(byKey.values());
+}
+
+function mergeAttendance(localRow, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    timetableEntryId: remoteRow.timetable_entry_id,
+    date: remoteRow.date,
+    status: remoteRow.status,
+    note: remoteRow.note ?? null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localRow) return remote;
+  if (newer(remote.updatedAt, localRow.updatedAt)) return remote;
+  // The local row's CONTENT wins on LWW, but the remote id still wins on
+  // identity. Keeping the local uuid here would leave this device pushing
+  // under an id the server does not use, and the next pull would hand back a
+  // row that no longer matches anything locally.
+  return localRow.id === remote.id ? localRow : { ...localRow, id: remote.id };
+}
+
+function mergeNote(localNote, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    courseId: remoteRow.course_id ?? null,
+    title: remoteRow.title ?? null,
+    lessonDate: remoteRow.lesson_date ?? null,
+    // The whole note under LWW. Character-level merge was considered and
+    // rejected: two devices editing one note is rare in a single-user study
+    // app, and a three-way text merge that gets it wrong silently interleaves
+    // two revision sessions into something neither person wrote. Whole-row LWW
+    // at least loses a whole edit visibly.
+    content: remoteRow.content ?? '',
+    // Free placement. Travels with the content it describes and under the same
+    // LWW rule, because the two are one fact: a layout that arrived without
+    // its own content would hash-mismatch and be discarded on open, which is
+    // the stale path in features/notebook/layout.js rather than a merge.
+    // `null` from a row written by a version that predates the column, and
+    // from any note nobody has arranged.
+    layout: remoteRow.layout ?? null,
+    sessionId: remoteRow.session_id ?? null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localNote) return remote;
+  if (newer(remote.updatedAt, localNote.updatedAt)) return remote;
+  return localNote;
+}
+
+function mergeNoteAttachment(localAtt, remoteRow) {
+  const remote = {
+    id: remoteRow.id,
+    entryId: remoteRow.entry_id,
+    storagePath: remoteRow.storage_path,
+    fileName: remoteRow.file_name,
+    mimeType: remoteRow.mime_type ?? null,
+    sizeBytes: remoteRow.size_bytes ?? null,
+    updatedAt: remoteRow.updated_at || null,
+    deletedAt: remoteRow.deleted_at || null,
+  };
+  if (!localAtt) return remote;
+  if (newer(remote.updatedAt, localAtt.updatedAt)) return remote;
+  return localAtt;
+}
+
+export function applyRemotePull(state, remote) {
+  // Subjects → state.courses (keyed by id).
+  const courses = { ...(state.courses || {}) };
+  for (const row of remote.subjects) {
+    courses[row.id] = mergeSubject(courses[row.id], row);
+  }
+
+  // Grades → state.grades (array).
+  const gradeById = new Map((state.grades || []).map((g) => [g.id, g]));
+  for (const row of remote.grades) {
+    gradeById.set(row.id, mergeGrade(gradeById.get(row.id), row));
+  }
+  const grades = Array.from(gradeById.values());
+
+  // Sessions → state.studySessions (array).
+  const sessionById = new Map((state.studySessions || []).map((s) => [s.id, s]));
+  for (const row of remote.sessions) {
+    sessionById.set(row.id, mergeSession(sessionById.get(row.id), row));
+  }
+  const studySessions = Array.from(sessionById.values());
+
+  // v1.7 — assignments / exams / actions. `remote.*` are defaulted rather than
+  // assumed: a client that pulled before these tables existed (or a partial
+  // response) must leave local data untouched instead of blanking it.
+  //
+  // Deletes are applied by REMOVAL here, not by keeping a tombstone in local
+  // state — unlike courses/grades/sessions above.
+  //
+  // Why the difference: assignments, exams and actions are read in ~20 places
+  // across App.jsx, none of which filter `deletedAt` today, because a local
+  // delete has always spliced the row straight out of the array. Introducing
+  // tombstones would mean adding a guard to every one of those call sites, and
+  // a single miss puts a deleted assignment back on a user's screen. Dropping
+  // the row instead keeps local state exactly the shape every existing render
+  // path already expects, so this feature adds no new way for the working
+  // views to break.
+  //
+  // Trade-off, accepted deliberately: a delete on one device beats a
+  // simultaneous edit on another rather than going to LWW. For homework that
+  // is the intuitive outcome — the thing is gone — and it is the same rule the
+  // local delete already applies.
+  const mergeList = (localList, remoteRows, mergeFn) => {
+    const byId = new Map((localList || []).map((x) => [x.id, x]));
+    for (const row of remoteRows || []) {
+      if (row.deleted_at) { byId.delete(row.id); continue; }
+      byId.set(row.id, mergeFn(byId.get(row.id), row));
+    }
+    return Array.from(byId.values());
+  };
+
+  const assignments = mergeList(state.assignments, remote.assignments, mergeAssignment);
+  const exams = mergeList(state.exams, remote.exams, mergeExam);
+  // Only manual to-dos live in state.actions; the Actions view derives its
+  // suggestions from assignments/exams at render time and never persists them,
+  // so there is nothing extra to filter out here.
+  const actions = mergeList(state.actions, remote.actions, mergeAction);
+
+  // v1.10. `remote.*` defaulted for the same reason as above: a client that
+  // pulled before these tables existed, or a partial response where one of the
+  // ten selects failed, must leave the local list untouched rather than blank
+  // a term tree the user just built.
+  const plannedSessions = mergeList(state.plannedSessions, remote.plannedSessions, mergePlannedSession);
+  const academicTerms = mergeList(state.academicTerms, remote.academicTerms, mergeTerm);
+  const timetableEntries = mergeList(state.timetableEntries, remote.timetableEntries, mergeTimetableEntry);
+  const attachments = mergeList(state.attachments, remote.attachments, mergeAttachment);
+  const commitments = mergeList(state.commitments, remote.commitments, mergeCommitment);
+  // v1.13 Item 1b. Tombstone-removal like the assignments above rather than a
+  // kept `deletedAt`, for the same reason: the notebook tree and the editor
+  // both read the list without filtering, and one missed guard would put a
+  // deleted note back on somebody's screen.
+  const notes = mergeList(state.notes, remote.notes, mergeNote);
+  const noteAttachments = mergeList(state.noteAttachments, remote.noteAttachments, mergeNoteAttachment);
+  const attendance = mergeAttendanceList(state.attendance, remote.attendance);
+
+  return {
+    ...state,
+    courses, grades, studySessions, assignments, exams, actions, notes, noteAttachments, attendance,
+    plannedSessions, academicTerms, timetableEntries, attachments, commitments,
+  };
+}

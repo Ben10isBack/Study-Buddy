@@ -1,0 +1,16 @@
+{
+  "appId": "com.StudyDesk.app",
+  "appName": "Study Buddy",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "StatusBar": {
+      "overlaysWebView": false,
+      "style": "LIGHT",
+      "backgroundColor": "#F5F2ED"
+    }
+  }
+}

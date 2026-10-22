@@ -1,0 +1,378 @@
+/* Tokens, reset, app shell, sidebar and bottom tab bar.
+   Extracted from App.jsx (SD-6), where it lived as the `css` template
+   literal. Verbatim — no rules were merged, reordered or renamed, so this
+   commit changes where the CSS lives and nothing about what it does. */
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+h1,h2,h3,h4,h5,h6{font-weight:inherit;font-size:inherit;}
+:root{--bg:#f5f2ed;--surface:#faf8f4;--surface2:#f0ece4;--border:#e0d9cf;--border2:#cfc8bc;--text:#1a1814;--muted:#6b6560;--muted2:#7a7570;--danger:#c0392b;--danger-bg:#fee;--danger-border:#fcc;--danger-on:#fff;--warning:#b5470b;--warning-bg:#fff4e6;--warning-border:#f0d4a0;--font-display:'Playfair Display',serif;--font-mono:'DM Mono',monospace;--font-sans:'DM Sans',sans-serif;--shadow:0 1px 3px rgba(0,0,0,0.08);--shadow-md:0 4px 12px rgba(0,0,0,0.08);--ease-paper:cubic-bezier(0.4,0,0.2,1);--ease-page-turn:cubic-bezier(0.3,0,0.2,1);--ease-settle:cubic-bezier(0.16,1,0.3,1);/* Pomodoro phase colours, previously hardcoded in TimerView.jsx. Identical values, tokenised so the clock can be retinted: the focus one is the free theme's ink, so on a dark ground it rendered black-on-black. It drives the ring stroke as well as the numerals, so a literal there loses the whole timer, not one part of it. */--phase-focus:#1a1814;--phase-short:#2e7d52;--phase-long:#1a5c9e;}
+
+/* ── Semantic colour tokens (v1.13, free-tier dark mode) ───────────────────
+   Every one of these was a literal hex or rgba() sitting in a component
+   stylesheet. None of the values change here: this block is the light theme
+   restating what those files already painted, so the cream build is
+   byte-identical in appearance and the dark modes have something to override.
+
+   The reason for doing it at all is the `phaseColor` incident (see the note
+   on --phase-* above): a literal in a component file is invisible to a theme,
+   and the first theme that needs a different value discovers it as a missing
+   element rather than as a wrong colour. Names are semantic — what the colour
+   MEANS — because a name like `--violet` would lie the moment Slate paints it
+   in chalk yellow.
+
+   Tints are spelled out rather than derived with color-mix(): this app ships
+   to Android WebViews we do not control the version of, and a tint that
+   silently resolves to `transparent` on an older engine loses the element
+   rather than mis-colouring it — the same failure shape as the literal. */
+:root{
+  /* Solid ink on a filled control. Not --text: the button ground is browner
+     than the page ink, and on dark grounds they diverge entirely. */
+  --accent:#3d2e1e;
+  --accent-on:#faf8f4;
+  --on-solid:#fff;          /* text on a saturated chip (exam pills, ribbons) */
+
+  --focus-ring:#aaa;        /* input border while focused */
+
+  /* Three status hues the app uses outside the danger/warning pair. */
+  --success:#2e7d52;
+  --info:#1a5c9e;
+  --exam:#6d3fa0;
+
+  /* Washes. Each is its own token rather than an alpha on the hue above,
+     because on a dark ground a wash is a DEEPENING and cannot be expressed as
+     the same colour at low alpha. */
+  --exam-bg:rgba(109,63,160,0.12);
+  --exam-bg-strong:rgba(109,63,160,0.15);
+  --info-bg:rgba(26,92,158,0.12);
+  --info-soft:rgba(26,92,158,0.06);
+  --info-soft-border:rgba(26,92,158,0.3);
+  --success-soft:rgba(46,125,82,0.07);
+  --success-border:rgba(46,125,82,0.4);
+  --success-border-weak:rgba(46,125,82,0.25);
+  --danger-soft:rgba(192,57,43,0.08);
+  --danger-soft-border:rgba(192,57,43,0.25);
+  --danger-tint:rgba(192,57,43,0.1);
+  --danger-tint-border:rgba(192,57,43,0.2);
+  --danger-strong-border:rgba(192,57,43,0.4);
+  --danger-strong-bg:rgba(192,57,43,0.06);
+  --confirm-bg:#fdf6f5;
+  --confirm-border:#e8c6c0;
+
+  --rule2:#e7e0d1;          /* palest rule — lesson bands, context lines */
+  --chip-edge:rgba(0,0,0,0.12);
+
+  /* Lock In is a full-screen takeover that was ALREADY dark in every theme.
+     Tokenised so Black can take it to true #000 rather than leaving a
+     near-black gradient banding against the page behind it. */
+  --lockin-1:#1f1c17;
+  --lockin-2:#0e0c09;
+  --lockin-ink:#faf8f4;
+  --lockin-on:#1a1814;
+  --shadow-strong:0 4px 24px rgba(0,0,0,0.5);
+
+  --selection:#d4c9b8;
+  /* Paper grain. The overlay is the free theme's signature, so it is driven by
+     tokens rather than removed: a mode that should not carry it sets
+     --grain-opacity to 0 and the rule below no-ops. See modes.css. */
+  --grain-opacity:0.035;
+  --grain-size:128px;
+  --grain-blend:normal;
+}
+
+/* ── Notebook tokens (v1.13 Item 1b) ───────────────────────────────────────
+   Values are the design handoff's §6 and §11 tables, verbatim. Declared once
+   per theme scope, `--nb-` prefixed, and additive: no existing token changes
+   value and no existing selector is edited, which is what acceptance check 10
+   ("pre-existing Light views pixel-identical") depends on.
+
+   `--nb-page` is deliberately the same colour as the app's own `--bg` in each
+   palette. The notebook is not a panel sitting on the app; it is the same
+   sheet of paper. Change one and re-check the other.
+
+   Where a pair like `34/44px` appears in the handoff, the token holds the
+   PHONE value and notebook.css overrides it at the desktop breakpoint — a
+   custom property cannot carry two values, and putting the desktop number
+   here would make the phone the exception.
+
+   --nb-rule: none in Black and Slate is how those themes disable full-page
+   ruling with no selector change (§1). The gradient still evaluates; it just
+   paints nothing. */
+:root{
+  --nb-page:#f5f2ed;
+  --nb-rule:#E4DCCF;
+  --nb-rule-h:28px;
+  --nb-margin-rule:#C9756B;
+  --nb-margin-w:34px;
+  --nb-text-x:48px;
+  --nb-current-line:none;
+  --nb-ink:#1a1814;
+  /* §7 prints 5.4:1 for "muted UI text on page" in Light. The hex it gives
+     for it, #7a7570, actually measures 4.08:1 against #f5f2ed — below AA.
+     The handoff anticipates exactly this ("Re-measure every row in the
+     running app rather than trusting this table"), so the RULE wins over the
+     value and the token moves to the app's own --muted, which measures 5.14
+     and is the nearest existing ink in the palette. Same correction in Slate.
+     This is a NEW token, so nothing pre-existing moves and the pixel-freeze
+     on shipped Light views is untouched. */
+  --nb-ink-muted:#6b6560;
+  --nb-caret:#1a1814;
+  --nb-marker:#6b6560;
+  --nb-check-line:#6b6560;
+  /* A done item fills with ink: filled in the muted grey it read as
+     disabled rather than done (StudyDesk#114). */
+  --nb-check-fill:#1a1814;
+  --nb-hl-1:#EDD98A;
+  --nb-hl-2:#EFC5C0;
+  --nb-hl-3:#C9DCC4;
+  --nb-photo-border:#cfc8bc;
+  --nb-bar-bg:#faf8f4;
+  --nb-bar-rule:#e0d9cf;
+  --nb-font-body:'DM Sans',sans-serif;
+  --nb-font-head:'Playfair Display',serif;
+  --nb-font-meta:'DM Mono',monospace;
+  --nb-size-body:15px;
+  /* §11 */
+  --nb-src:#6b6560;
+  --nb-stroke-w:1px;
+}
+
+/* Notebook geometry, desktop tier. The handoff's §1 table gives phone/desktop
+   pairs; a custom property cannot hold two values, so the phone number is the
+   token and this is its other half. Applies to the free palettes (light, dark
+   and black share one geometry — lighting does not move a margin); Stacks and
+   Slate declare their own in themes.css. */
+@media(min-width:769px){
+  :root{
+    --nb-margin-w:44px;
+    --nb-text-x:60px;
+    --nb-rule-top:20px;
+  }
+}
+/* ── Shell tokens (v1.9 Item 14, Phase 1) ──────────────────────────────────
+   The three-tier desktop shell is driven entirely by these three values, so a
+   later desktop surface sizes itself against the same rhythm instead of
+   hardcoding its own numbers. Tier overrides live at the bottom of this file;
+   the tier itself is resolved in JS by `src/lib/useShell.js`, which explains
+   why in more detail. Defaults here are the tablet tier — the values the app
+   already shipped — so anything that misses a tier override behaves as before. */
+:root{
+  --rail-w:240px;        /* full sidebar */
+  --rail-w-min:64px;     /* icon-only rail */
+  --content-max:900px;   /* reading measure for single-column views */
+  --shell-gutter:32px;
+}
+html,body,#root{height:100%;background:var(--bg);color:var(--text);font-family:var(--font-sans);overscroll-behavior:none;}
+/* Paper grain texture overlay */
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:var(--grain-opacity);mix-blend-mode:var(--grain-blend);background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");background-repeat:repeat;background-size:var(--grain-size) var(--grain-size);}
+::selection{background:var(--selection);}
+::-webkit-scrollbar{width:5px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+*:focus-visible{outline:2px solid var(--text);outline-offset:2px;border-radius:2px;}
+
+/* ── Desktop layout ── */
+.app{display:flex;height:100vh;overflow:hidden;}
+.sidebar{width:var(--rail-w);min-width:var(--rail-w);background:var(--surface);border-inline-end:1px solid var(--border);display:flex;flex-direction:column;transition:none;}
+.sidebar-header{padding:24px 20px 16px;border-bottom:1px solid var(--border);}
+.sidebar-logo-wrap{display:flex;align-items:center;gap:12px;}
+.sidebar-logo{width:40px;height:40px;border-radius:10px;flex-shrink:0;}
+.sidebar-wordmark{font-family:var(--font-display);font-size:20px;font-weight:600;}
+.sidebar-sub{font-family:var(--font-mono);font-size:10px;color:var(--muted);margin-top:3px;letter-spacing:0.05em;}
+.sidebar-nav{padding:12px 0;border-bottom:1px solid var(--border);}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 20px;font-size:13px;cursor:pointer;color:var(--muted);transition:all 0.1s;border-inline-start:2px solid transparent;}
+.nav-item:hover{color:var(--text);background:var(--surface2);}
+.nav-item.active{color:var(--text);border-left-color:var(--text);background:var(--surface2);}
+.sidebar-courses{flex:1;overflow-y:auto;padding:12px 0;}
+.courses-label{padding:4px 20px 8px;font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;color:var(--muted2);text-transform:uppercase;}
+.course-item{display:flex;align-items:center;gap:10px;padding:8px 20px;cursor:pointer;font-size:13px;transition:background 0.1s;border-inline-start:2px solid transparent;}
+.course-item:hover{background:var(--surface2);}
+.course-item.active{background:var(--surface2);border-left-color:var(--text);}
+.course-pip{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.course-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.course-count{font-family:var(--font-mono);font-size:10px;color:var(--muted2);}
+.course-edit-btn{opacity:0;font-size:13px;color:var(--muted);cursor:pointer;padding:0 2px;transition:opacity 0.1s,color 0.1s;line-height:1;}
+.course-item:hover .course-edit-btn{opacity:1;}
+.course-edit-btn:hover{color:var(--text);}
+.add-course-btn{display:flex;align-items:center;gap:8px;padding:8px 20px;color:var(--muted);font-size:12px;cursor:pointer;transition:color 0.1s;}
+.add-course-btn:hover{color:var(--text);}
+.main{flex:1;overflow-y:auto;display:flex;flex-direction:column;background:var(--bg);}
+/* Horizontal padding lives on `.topbar-inner`, not here, so the inner box can
+   share `.content`'s max-width and centring. With the padding on the outer
+   element instead, the two centre against different available widths and the
+   page title drifts left of the column it labels — visible from about 1300px
+   up, which is exactly the range this milestone adds. */
+/* v1.12 - clear the display cutout.
+   `StatusBar.overlaysWebView:false` in capacitor.config.json used to keep
+   the WebView below the status bar, but Android 15+ ENFORCES edge-to-edge
+   for apps targeting SDK 35+ and this app targets 36 - so that setting is
+   now a no-op and the topbar draws behind the status bar and the punch-hole
+   camera. Found on an S24 (Android 36), where the timer pill was the first
+   thing tall enough to visibly collide with the cutout.
+   `max()` rather than a bare inset so desktop and any device reporting 0
+   keep the original 18px. */
+.topbar{display:flex;align-items:center;padding:max(18px,var(--safe-area-inset-top, env(safe-area-inset-top))) 0 18px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:10;}
+.topbar-inner{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;max-width:var(--content-max);margin:0 auto;padding:0 var(--shell-gutter);}
+.topbar-title{font-family:var(--font-display);font-size:22px;font-weight:500;}
+.topbar-avatar{width:36px;height:36px;min-width:36px;border-radius:50%;border:1px solid var(--border2);background:var(--surface);color:var(--text);font-family:var(--font-display);font-size:14px;font-weight:600;letter-spacing:0.02em;cursor:pointer;display:flex;align-items:center;justify-content:center;text-transform:uppercase;transition:all 0.12s var(--ease-paper,ease);-webkit-tap-highlight-color:transparent;}
+.topbar-avatar:hover{border-color:var(--text);}
+.topbar-avatar.active{background:var(--text);color:var(--bg);border-color:var(--text);}
+/* v1.12 Item 9 - the shared AccountAvatar renders into both the 36px topbar
+   button and the 64px Settings preview, so its two inner elements are styled
+   once, here, rather than per-surface. overflow:hidden on the button is what
+   keeps a square photo inside the circle. */
+.topbar-avatar{overflow:hidden;}
+.avatar-img{width:100%;height:100%;object-fit:cover;display:block;}
+/* Vertically centred at RUNTIME by AccountAvatar, not by a constant here.
+   Two attempts with CSS alone failed and the second made it worse: flex centres
+   the line box, and how far the ink sits from that box's centre depends on
+   WHICH FONT the platform falls back to for these symbols - they are not in
+   Playfair Display. Measured in desktop Chrome the glyphs were already centred
+   to 0.21px, so any constant tuned there is wrong on Android's WebView, which
+   falls back differently. The component measures the font that actually
+   rendered and corrects for it. */
+.avatar-glyph{line-height:1;display:block;}
+.topbar-date{font-family:var(--font-mono);font-size:11px;color:var(--muted);}
+.content{padding:var(--shell-gutter);flex:1;max-width:var(--content-max);width:100%;margin:0 auto;}
+/* Opt-out for surfaces that genuinely want the full shell width rather than a
+   reading measure — the calendar grid and the multi-pane course layout in
+   Phase 2. Provided here so those views widen by declaring intent, instead of
+   each one overriding `max-width` against the cap on its own. */
+.content.content-wide{max-width:none;}
+@media(max-width:768px){
+  .content{padding:16px 14px;max-width:100%;margin:0;}
+}
+
+/* ── Mobile layout — fixed bottom tab bar ── */
+@media(max-width:768px){
+  .app{display:block;height:100dvh;overflow:hidden;position:relative;}
+  /* Hide entire sidebar on mobile — tab bar is fixed, not inside sidebar */
+  .sidebar{display:none;}
+  /* Main scrolls within remaining space above the fixed tab bar */
+  .main{height:100dvh;overflow-y:auto;padding-bottom:calc(64px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom)));}
+  /* Same pixels as before the topbar was split into outer/inner — 14px top,
+     16px sides, 12px bottom. The phone tier is deliberately unchanged. */
+  .topbar{padding:max(14px,var(--safe-area-inset-top, env(safe-area-inset-top))) 0 12px;position:sticky;top:0;z-index:10;}
+  .topbar-inner{max-width:100%;padding:0 16px;}
+  .topbar-title{font-size:18px;}
+  .content{padding:16px 14px;max-width:100%;}
+  /* Fixed bottom tab bar — always at the bottom, never overlaps status bar */
+  .mobile-tabbar{
+    display:flex;
+    position:fixed;
+    bottom:0;
+    left:0;
+    right:0;
+    z-index:50;
+    background:var(--surface);
+    border-top:1px solid var(--border);
+    padding-bottom:var(--safe-area-inset-bottom, env(safe-area-inset-bottom));
+  }
+  /* v1.9 Item 6 — an icon sits above the label again, so the tab is a column.
+     SD-F2 dropped the old glyph row in v1.6.0 because those glyphs were an
+     inconsistent mix; these are lucide line icons at LimeLog's size and stroke.
+     The label is unchanged and still does the work: 11px monospace fits the
+     worst label the app ships, Spanish "Temporizador" at 12 characters, in
+     roughly 65px of the ~90px each of the four tabs gets on a 360px screen.
+     Height budget against the 52px tap target: 20px icon + 3px gap + ~14px
+     label + 12px padding = 49px, so min-height still governs and the target
+     does not shrink. */
+  .mobile-tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;min-height:52px;padding:6px 4px;cursor:pointer;color:var(--muted);font-size:11px;font-family:var(--font-mono);letter-spacing:0.03em;text-align:center;line-height:1.25;border-top:2px solid transparent;transition:all 0.1s;-webkit-tap-highlight-color:transparent;}
+  .mobile-tab-label{display:block;}
+  .mobile-tab:active{background:var(--surface2);}
+  .mobile-tab.active{color:var(--text);border-top-color:var(--text);}
+  /* Course strip — v1.15 Item 2. The phone's answer to `.sidebar-courses`.
+     These rules sat unused from v1.0 as a collapsed bar fixed above the tab
+     bar; wired up now, but in the page flow at the top of Plan and course
+     detail instead. A fixed bar would cover the end of every list, and a
+     collapsed one needs a toggle, which just hides the courses again.
+     The negative margin runs it to the screen edges against `.content`'s 14px
+     gutter, so chips scroll out under the edge rather than stopping short. */
+  .mobile-courses-bar{
+    display:flex;align-items:center;
+    margin:-16px -14px 4px;
+    border-bottom:1px solid var(--border);
+  }
+  .mobile-courses-scroll{display:flex;gap:6px;padding:10px 14px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;flex:1;overscroll-behavior-x:contain;}
+  .mobile-course-chip{min-height:32px;font-family:inherit;color:var(--text);}
+  .mobile-course-add{min-height:32px;font-family:inherit;}
+  .mobile-courses-scroll::-webkit-scrollbar{display:none;}
+  .mobile-course-chip{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:20px;white-space:nowrap;font-size:12px;cursor:pointer;flex-shrink:0;-webkit-tap-highlight-color:transparent;}
+  .mobile-course-chip.active{border-color:var(--text);}
+  .mobile-course-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+  .plan-courses{display:none;}
+  .mobile-course-add{padding:6px 12px;background:transparent;border:1px dashed var(--border2);border-radius:20px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0;}
+}
+@media(min-width:769px){
+  .mobile-tabbar,.mobile-courses-bar{display:none!important;}
+}
+
+/* ── Tier overrides (v1.9 Item 14, Phase 1) ────────────────────────────────
+   The tablet tier (769–1200px) intentionally has no block here: it keeps the
+   900px measure and 32px gutter already declared in `:root`, which is the
+   right density at that width and is what the app has always shipped. What it
+   gains is the icon rail below, which buys back 176px of content width.
+   Only the genuinely wide tiers change the measure. The upper stop exists so
+   a 2560px monitor doesn't produce 200-character lines — the shell keeps
+   growing, the reading column does not. */
+@media(min-width:1201px){
+  :root{--content-max:1180px;--shell-gutter:40px;}
+  .topbar-title{font-size:26px;}
+}
+@media(min-width:1600px){
+  :root{--content-max:1360px;--shell-gutter:48px;}
+}
+
+/* ── Icon rail ─────────────────────────────────────────────────────────────
+   `.is-rail` comes from `useSidebarRail` (src/lib/useShell.js) — on by default
+   at the tablet tier, off at desktop, overridable either way by the toggle and
+   persisted. Only the width token actually changes; everything below simply
+   removes what no longer fits in 64px. Labels go to `display:none` rather than
+   fading, so nothing overflows mid-transition while the width animates. */
+.app.is-rail{--rail-w:var(--rail-w-min);}
+.app.is-rail .rail-hide{display:none;}
+.app.is-rail .sidebar-header{padding:20px 8px 16px;}
+.app.is-rail .sidebar-logo-wrap{justify-content:center;gap:0;}
+.app.is-rail .courses-label{padding-inline:0;text-align:center;}
+.app.is-rail .nav-item,
+.app.is-rail .course-item,
+.app.is-rail .add-course-btn,
+.app.is-rail .rail-toggle{padding-inline:0;justify-content:center;gap:5px;}
+
+/* Collapse control. Sits in a footer rather than the header because the header
+   is only 64px wide when railed and the logo already owns it. */
+.sidebar-foot{border-top:1px solid var(--border);padding:6px 0;}
+.rail-toggle{display:flex;align-items:center;gap:10px;width:100%;padding:9px 20px;background:none;border:0;color:var(--muted2);font-family:var(--font-mono);font-size:9px;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:color 0.1s,background 0.1s;}
+.rail-toggle:hover{color:var(--text);background:var(--surface2);}
+/* v1.15 (Item 12) — desktop "update available". Same footer line as the
+   collapse control, inked in the success green rather than a filled button:
+   news, not an alarm. The dot is what survives the rail. */
+.update-notice{position:relative;color:var(--success);}
+.update-notice:disabled{cursor:default;}
+.update-notice:hover{color:var(--success);background:var(--success-soft);}
+.update-notice-dot{width:6px;height:6px;border-radius:50%;background:var(--success);flex-shrink:0;margin-inline:5px;}
+.update-notice-ver{margin-inline-start:auto;letter-spacing:0.04em;text-transform:none;}
+/* Download progress: a hairline along the foot of the line, like a ruled
+   margin filling in, rather than a chunky bar. */
+.update-notice-bar{position:absolute;inset-inline-start:0;bottom:0;height:2px;background:var(--success);transition:width 0.3s linear;}
+
+@media(min-width:769px){
+  /* Width only, and only where the sidebar is actually on screen — below
+     769px it is display:none and the tab bar takes over, so there is nothing
+     to animate across that boundary. */
+  .sidebar{transition:width 0.22s var(--ease-paper),min-width 0.22s var(--ease-paper);}
+}
+@media(prefers-reduced-motion:reduce){
+  .sidebar{transition:none;}
+}
+
+/* Calendar-feed rows. The error and the note need to read as what they are —
+   an unstyled error message is just a sentence, and the whole point of giving
+   every failure code its own sentence was that the user can act on it. */
+.feed-row-err {
+  color: var(--danger);
+  font-size: 0.85em;
+  margin-top: 2px;
+}
+.feed-row-note {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin-top: 2px;
+}

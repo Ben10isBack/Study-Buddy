@@ -1,0 +1,179 @@
+// GDPR data-subject rights — Article 20 (portability) and Article 17 (erasure).
+//
+// Both are exposed as buttons in Settings rather than as a "contact us" address,
+// so a user never has to ask and we never have to service a request by hand.
+//
+// Export works signed in or as a guest: a guest's data lives only on the device,
+// and it is still their data. Deletion only means anything when there is a
+// server-side account to delete.
+
+import { supabase } from './supabase.js';
+import { selectAll } from './selectAll.js';
+import { removeForUser } from './userStorage.js';
+import { AVATAR_BUCKET, AVATAR_FILE } from './profile.js';
+
+const EXPORT_SCHEMA_VERSION = 1;
+
+/**
+ * Everything we hold about the user, as a plain object.
+ *
+ * Built from local state rather than by re-reading the server: local state is
+ * the union of what synced down and what has not synced up yet, so it is the
+ * more complete picture. Article 20 asks for "structured, commonly used and
+ * machine-readable" — JSON qualifies, and unlike CSV it can carry the nested
+ * shape without inventing a flattening the user then has to undo.
+ *
+ * Soft-deleted rows are included, and flagged. They still exist in the
+ * database, so omitting them would make the export a misleading account of what
+ * we hold.
+ */
+/**
+ * v1.16 (limecore#16) — the two things we hold that exist ONLY on the server:
+ * feedback the user sent, and error reports (kept 90 days). Neither is in
+ * local state, so an export built from it alone would omit them, and the
+ * privacy policy (NCC#50) promises the export includes both. Signed-in only;
+ * a guest has sent neither. A failed read is recorded in the export rather
+ * than dropped, so an incomplete export says so.
+ */
+export const SERVER_ONLY_TABLES = ['feedback', 'client_errors'];
+
+// v1.18.1 (StudyDesk#153): the columns a signed-in user may read. `feedback`
+// lost its table-wide SELECT in the v1.17 status-columns migration; only
+// these are granted, so `select('*')` (and a filter on user_id) failed as a
+// whole and the export held "permission denied" instead of the user's
+// feedback. RLS already limits the rows to the user's own. `client_errors`
+// still has every column granted, user_id included.
+const FEEDBACK_EXPORT_COLUMNS = 'id, app, app_version, category, rating, message, status, shipped_in, created_at';
+
+export async function serverOnlyData(userId) {
+  const out = {};
+  for (const table of SERVER_ONLY_TABLES) {
+    try {
+      const { data, error } = table === 'feedback'
+        ? await selectAll(supabase, table, { columns: FEEDBACK_EXPORT_COLUMNS })
+        : await selectAll(supabase, table, { filter: (q) => q.eq('user_id', userId) });
+      out[table] = error ? { error: error.message } : (data ?? []);
+    } catch (e) {
+      out[table] = { error: e.message };
+    }
+  }
+  return out;
+}
+
+async function buildExport(state, session) {
+  const courses = Object.values(state.courses || {});
+  const userId = session?.user?.id;
+  const server = userId ? await serverOnlyData(userId) : null;
+  return {
+    schemaVersion: EXPORT_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    application: 'StudyDesk',
+    account: session
+      ? {
+          email: session.user?.email ?? null,
+          userId: session.user?.id ?? null,
+          signInProvider: session.user?.app_metadata?.provider ?? null,
+          createdAt: session.user?.created_at ?? null,
+        }
+      : { mode: 'guest', note: 'No account — this data has never left the device.' },
+    counts: {
+      courses: courses.length,
+      grades: (state.grades || []).length,
+      studySessions: (state.studySessions || []).length,
+      assignments: (state.assignments || []).length,
+      exams: (state.exams || []).length,
+    },
+    courses,
+    grades: state.grades || [],
+    studySessions: state.studySessions || [],
+    assignments: state.assignments || [],
+    exams: state.exams || [],
+    ...(server ? { server } : {}),
+    settings: {
+      gradeMode: state.gradeMode ?? null,
+      customScale: state.customScale ?? null,
+      language: (() => {
+        try { return localStorage.getItem('limecore_lang'); } catch { return null; }
+      })(),
+    },
+  };
+}
+
+/** Trigger a download of the export as a .json file. Returns the filename. */
+export async function downloadExport(state, session) {
+  const payload = await buildExport(state, session);
+  const json = JSON.stringify(payload, null, 2);
+  const name = `studydesk-export-${new Date().toISOString().slice(0, 10)}.json`;
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick — revoking synchronously can cancel the download
+  // on some Android WebView versions before it has started.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  return name;
+}
+
+/**
+ * Erase the account and everything attached to it.
+ *
+ * Deleting the auth user is sufficient: every user-owned table declares
+ * `REFERENCES auth.users(id) ON DELETE CASCADE`, so profiles, subjects, grades
+ * and study_sessions all go with it. Verified against the live schema rather
+ * than assumed — a soft delete would not satisfy Article 17.
+ *
+ * The deletion itself runs in the `delete-account` Edge Function because
+ * `auth.admin.deleteUser` needs the service-role key, which must never ship in
+ * a client bundle. The function authenticates the caller by their own JWT and
+ * deletes only that user, so it cannot be aimed at anyone else.
+ *
+ * Local data is cleared regardless of what the server says. A user who asked to
+ * be deleted should not find their coursework still on the device afterwards.
+ */
+export async function deleteAccount({ clearLocal }) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    // Guest: there is no server-side account. Clearing the device is the whole
+    // of the erasure.
+    await clearLocal();
+    return { deleted: 'local' };
+  }
+
+  // v1.12 Item 9 — remove the avatar object BEFORE the account goes.
+  //
+  // `auth.admin.deleteUser` cascades DATABASE rows; it does not touch Storage.
+  // An avatar left behind would be an orphaned object nobody can ever reach or
+  // delete, since the RLS policy keys on a `auth.uid()` that no longer exists —
+  // exactly the second orphan class the plan says not to create alongside
+  // AUDIT-NCC-V15-1. Done here rather than in the Edge Function because the
+  // user is still authenticated at this moment, so their own delete policy
+  // applies and no deploy is required.
+  //
+  // Deliberately not fatal: erasure of the account must not be blocked by a
+  // storage hiccup. A failure here leaves one 256 KB object, which is a
+  // housekeeping problem; a failure to delete the account is a GDPR one.
+  // v1.18.1 (limecore#61): the Edge Function now also removes the user's
+  // files from every bucket (attachments included) before deleting the
+  // account, on the same terms. This stays for a function not yet redeployed.
+  try {
+    await removeForUser(AVATAR_BUCKET, AVATAR_FILE);
+  } catch (e) {
+    console.warn('[delete-account] avatar removal failed, continuing:', e?.message || e);
+  }
+
+  const { error } = await supabase.functions.invoke('delete-account', {
+    body: { confirm: true },
+  });
+  if (error) throw new Error(error.message || 'Account deletion failed');
+
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // The user row is already gone, so the sign-out call may fail. Not fatal.
+  }
+  await clearLocal();
+  return { deleted: 'account' };
+}

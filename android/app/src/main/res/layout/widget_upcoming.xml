@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.10 — Upcoming, redesigned. Same page treatment as widget_next_up.
+
+     Each row carries an urgency dot and sits on a hairline rule, so the list
+     reads as writing on ruled paper. The rule stays under the last visible row
+     on purpose: ruled paper's lines run past where the writing stops, and which
+     row is last changes as items are hidden.
+
+     Rows remain a fixed set of pre-declared views rather than a ListView — see
+     UpcomingWidget for why. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/upcoming_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_paper"
+    android:paddingStart="38dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="14dp"
+    android:paddingBottom="12dp">
+
+    <TextView
+        android:id="@+id/upcoming_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/widget_upcoming_label"
+        android:fontFamily="monospace"
+        android:textSize="9sp"
+        android:letterSpacing="0.2"
+        android:textAllCaps="true"
+        android:textColor="#A8A096"
+        android:layout_marginBottom="7dp" />
+
+    <LinearLayout
+        android:id="@+id/row_0"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/widget_row_rule"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+        <ImageView
+            android:id="@+id/row_0_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/widget_dot_later"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/row_0_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:textSize="13sp"
+            android:textColor="#1A1814" />
+        <TextView
+            android:id="@+id/row_0_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:maxLines="1"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:textColor="#8A8279" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/row_1"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/widget_row_rule"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+        <ImageView
+            android:id="@+id/row_1_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/widget_dot_later"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/row_1_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:textSize="13sp"
+            android:textColor="#1A1814" />
+        <TextView
+            android:id="@+id/row_1_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:maxLines="1"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:textColor="#8A8279" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/row_2"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/widget_row_rule"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+        <ImageView
+            android:id="@+id/row_2_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/widget_dot_later"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/row_2_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:textSize="13sp"
+            android:textColor="#1A1814" />
+        <TextView
+            android:id="@+id/row_2_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:maxLines="1"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:textColor="#8A8279" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/row_3"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/widget_row_rule"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+        <ImageView
+            android:id="@+id/row_3_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/widget_dot_later"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/row_3_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:textSize="13sp"
+            android:textColor="#1A1814" />
+        <TextView
+            android:id="@+id/row_3_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:maxLines="1"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:textColor="#8A8279" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/row_4"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/widget_row_rule"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
+        <ImageView
+            android:id="@+id/row_4_dot"
+            android:layout_width="7dp"
+            android:layout_height="7dp"
+            android:layout_marginEnd="8dp"
+            android:src="@drawable/widget_dot_later"
+            android:contentDescription="@null" />
+        <TextView
+            android:id="@+id/row_4_title"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:fontFamily="serif"
+            android:textSize="13sp"
+            android:textColor="#1A1814" />
+        <TextView
+            android:id="@+id/row_4_when"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:maxLines="1"
+            android:fontFamily="monospace"
+            android:textSize="10sp"
+            android:textColor="#8A8279" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/upcoming_empty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="7dp"
+        android:text="@string/widget_nothing_due"
+        android:fontFamily="serif"
+        android:textSize="15sp"
+        android:textColor="#8A8279"
+        android:visibility="gone" />
+</LinearLayout>

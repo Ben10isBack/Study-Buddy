@@ -1,0 +1,1537 @@
+import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { webNotifyPermission, requestWebNotifyPermission, webNotifySupported } from '../../lib/webNotify.js';
+import { Capacitor } from '@capacitor/core';
+import { setErrorReportsEnabled, useErrorReportsEnabled } from '../../lib/errorReports.js';
+import { useTranslation } from 'react-i18next';
+import { setLanguage, SUPPORTED_LANGS, LANGUAGE_NAMES } from '../../i18n/index.js';
+import { useScrollSelectedIntoView } from '../../lib/useScrollSelectedIntoView.js';
+import { requestNoteFlush } from '../../lib/noteFlush.js';
+import { supabase, clearStoredSession } from '../../lib/supabase.js';
+import { clearOwner, isPageStale, reloadStalePage } from '../../lib/deviceOwner.js';
+import { setGuestMode } from '../../lib/guestMode.js';
+import PeriodHistory from '../grades/PeriodHistory.jsx';
+import * as sync from '../../lib/sync.js';
+import * as outbox from '../../lib/outbox.js';
+import { reconcileUnsynced } from '../../lib/reconcile.js';
+import { wipeAccountLocalData } from '../../lib/accountWipe.js';
+import ProfileSection from './ProfileSection.jsx';
+import ChangeEmail from './ChangeEmail.jsx';
+import SupporterBlock from './SupporterBlock.jsx';
+import Appearance from './Appearance.jsx';
+import CalendarFeeds from './CalendarFeeds.jsx';
+import { downloadExport, deleteAccount } from '../../lib/dataRights.js';
+import { useConfirm } from '../../lib/useConfirm.js';
+import { focusCapabilities, ensureNotificationPermission } from '../../lib/focusMode.js';
+import { scaleFor, normalizeScale, describeScale, SCALE_PRESETS } from '../../lib/gradeScale.js';
+import { preferredWeekStart, setPreferredWeekStart, resolveWeekStart, weekdayLabels } from '../../lib/calendar.js';
+import { preferredDayStart, setPreferredDayStart, DAY_START_CHOICES } from '../../lib/studyDay.js';
+import { preferredDueWindow, setPreferredDueWindow, DUE_WINDOW_CHOICES } from '../../lib/dueWindow.js';
+import { formatLocale } from '../../lib/dates.js';
+import { AccountAvatar, GuestAvatar } from '../../lib/avatar.jsx';
+import { useAccountAvatar } from '../../lib/useAccountAvatar.js';
+import pkg from '../../../package.json';
+import { IS_DESKTOP } from '../../lib/desktop.js';
+import { checkForDesktopUpdate, runDesktopUpdateAction, useDesktopUpdate } from '../../lib/desktopUpdate.js';
+import { setUpdateCheckEnabled, useFdroidUpdate } from '../../lib/fdroidUpdate.js';
+import { feedbackStatus, SHOW_FEEDBACK_STATUS } from '../../lib/feedbackStatus.js';
+
+// Product names, the same in every language.
+const APP_NAMES = { ncc: 'NCC', limelog: 'LimeLog', studydesk: 'Study Buddy' };
+// v1.18.1 (StudyDesk#139): how long sign-out waits for the server before
+// signing out on this device only.
+const SIGN_OUT_WAIT_MS = 3000;
+
+// limecore#17: newest first, one row per id. A server row replaces the local
+// copy made at send time, so the list never shows the same report twice.
+function mergeFeedback(incoming, current) {
+  const byId = new Map((current || []).map((r) => [r.id, r]));
+  for (const r of incoming) byId.set(r.id, r);
+  return [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, 20);
+}
+
+// A v4 uuid for a feedback row. crypto.randomUUID needs a secure context, and
+// the fallback builds one by hand rather than inventing a non-uuid id string —
+// the column is `uuid`, so a "fb-1a2b3c" style fallback would be rejected by
+// the database at the worst possible moment (offline, on retry).
+function newFeedbackId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const b = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(b);
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+const css = `
+.sv2-wrap{padding:16px 24px 80px;max-width:680px;margin:0 auto;}
+.sv2-section{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:14px;}
+.sv2-section-title{font-family:var(--font-mono);font-size:10px;letter-spacing:0.18em;color:var(--muted2);text-transform:uppercase;margin-bottom:14px;}
+
+/* Feedback (v1.10) */
+.sv2-fb-cats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;}
+.sv2-fb-cat{font-family:var(--font-mono);font-size:10px;letter-spacing:0.12em;text-transform:uppercase;padding:8px 13px;border-radius:999px;border:1px solid var(--border2);background:var(--bg);color:var(--muted2);cursor:pointer;transition:border-color .15s,background .15s,color .15s;}
+.sv2-fb-cat:hover{border-color:var(--muted2);}
+.sv2-fb-cat--on{border-color:var(--accent,#2e7d52);background:color-mix(in srgb,var(--accent,#2e7d52) 8%,transparent);color:var(--accent,#2e7d52);font-weight:600;}
+.sv2-fb-stars{display:flex;gap:4px;margin-bottom:12px;}
+.sv2-fb-star{font-size:21px;line-height:1;background:none;border:none;padding:2px 3px;cursor:pointer;color:var(--border2);transition:color .12s;}
+.sv2-fb-star--on{color:var(--accent,#2e7d52);}
+.sv2-fb-text{width:100%;min-height:98px;resize:vertical;}
+.sv2-fb-count{font-family:var(--font-mono);font-size:10px;color:var(--muted2);text-align:end;margin-top:5px;}
+/* Your feedback (v1.17, limecore#17): a ruled list under the form, like the
+   lines of a notebook page, with the status as a small stamp. */
+.sv2-fb-list{margin-top:18px;padding-top:14px;border-top:1px dashed var(--border2);}
+.sv2-fb-list-title{font-family:var(--font-mono);font-size:10px;letter-spacing:0.18em;color:var(--muted2);text-transform:uppercase;}
+.sv2-fb-list-note{margin-top:6px;}
+.sv2-fb-list ul{list-style:none;margin:8px 0 0;padding:0;}
+.sv2-fb-item{padding:11px 0;border-bottom:1px solid var(--border);}
+.sv2-fb-item:last-child{border-bottom:none;padding-bottom:0;}
+.sv2-fb-item-head{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.sv2-fb-item-meta{font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted2);min-width:0;}
+.sv2-fb-item-text{margin-top:4px;font-size:13px;line-height:1.45;color:var(--text);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}
+.sv2-fb-status{flex-shrink:0;font-family:var(--font-mono);font-size:9.5px;letter-spacing:0.12em;text-transform:uppercase;padding:3px 8px;border-radius:999px;border:1px solid var(--border2);color:var(--muted2);white-space:nowrap;}
+.sv2-fb-status--planned{border-color:var(--accent,#2e7d52);color:var(--accent,#2e7d52);}
+.sv2-fb-status--shipped{border-color:var(--accent,#2e7d52);background:var(--accent,#2e7d52);color:var(--bg);font-weight:600;}
+
+/* Language switcher grid (v1.5.1) */
+.sv2-lang-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;max-height:184px;overflow-y:auto;overscroll-behavior:contain;}
+.sv2-lang-btn{font-family:var(--font-display);font-size:14px;color:var(--text);background:var(--bg);border:1px solid var(--border2);border-radius:9px;padding:11px 10px;cursor:pointer;text-align:start;transition:border-color .15s,background .15s;}
+.sv2-lang-btn:hover{border-color:var(--muted2);}
+.sv2-lang-btn--on{border-color:var(--accent,#2e7d52);background:color-mix(in srgb,var(--accent,#2e7d52) 8%,transparent);color:var(--accent,#2e7d52);font-weight:600;}
+
+/* Account hero */
+.sv2-hero{display:flex;align-items:center;gap:14px;}
+.sv2-avatar{width:52px;height:52px;min-width:52px;border-radius:50%;border:1px solid var(--border2);background:var(--bg);color:var(--text);font-family:var(--font-display);font-size:21px;font-weight:600;display:flex;align-items:center;justify-content:center;text-transform:uppercase;}
+.sv2-hero-info{min-width:0;flex:1;}
+.sv2-hero-name{font-family:var(--font-display);font-size:18px;font-weight:600;line-height:1.1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sv2-hero-mail{margin-top:2px;font-family:var(--font-mono);font-size:11px;color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.sv2-hero-status{display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px;color:var(--muted);}
+.sv2-dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+
+/* Stat chips */
+.sv2-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px;}
+.sv2-stat{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;text-align:center;}
+.sv2-stat-num{font-family:var(--font-display);font-size:22px;font-weight:600;line-height:1;}
+.sv2-stat-lbl{font-family:var(--font-mono);font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted2);margin-top:5px;}
+
+/* wrap, because a row is label + control and some controls are wider than the
+   space left over. Before this the row simply overflowed its card: 350px of
+   content in a 252px box. Wrapping drops the control onto its own line instead,
+   which is the only honest option at 375px. */
+.sv2-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;font-size:14px;flex-wrap:wrap;}
+.sv2-row + .sv2-row{border-top:1px solid var(--border);}
+.sv2-row-label{color:var(--muted);font-size:13px;}
+.sv2-row-value{font-size:13px;color:var(--text);text-align:end;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
+/* flex:0 0 auto because this row is a flex container and the segmented
+   control must never be the thing that gives way. Without it, adding the
+   Study-until time input next to one starved it down to the width of
+   "Off" plus a sliver of the black active button. */
+.sv2-mode{display:inline-flex;flex:0 0 auto;border:1px solid var(--border2);border-radius:6px;overflow:hidden;}
+/* Four options do not fit at 375px with the default padding. Tighter rather
+   than fewer: dropping an option would be choosing for the user which lead
+   times matter. */
+.sv2-mode.compact button{padding:6px 9px;letter-spacing:0.03em;}
+.sv2-mode button{background:transparent;border:none;padding:6px 14px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;color:var(--muted);}
+.sv2-mode button.active{background:var(--text);color:var(--bg);}
+
+/* Custom grade scale editor (SD-F4) — only rendered when Custom is active. */
+.sv2-scale{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:10px;}
+.sv2-scale-field{display:flex;flex-direction:column;gap:4px;flex:1 1 84px;}
+.sv2-scale-field span{font-family:var(--font-mono);font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted2);}
+.sv2-scale-field input{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:7px;padding:8px 10px;font-size:14px;color:var(--text);}
+/* v1.14 Item 2 — the preset row spans, so the number fields below it keep the
+   three-across rhythm they already had rather than wrapping around chips. */
+.sv2-scale-presets{flex:1 1 100%;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.sv2-preset{background:transparent;border:1px solid var(--border2);border-radius:20px;padding:5px 12px;font-family:var(--font-mono);font-size:10px;letter-spacing:0.06em;color:var(--muted);cursor:pointer;transition:color .15s,border-color .15s;}
+.sv2-preset:hover{color:var(--text);border-color:var(--text);}
+/* A dashed rim marks the chips that LEAVE Custom rather than filling it in.
+   The row label says so too — this is the at-a-glance half of the same fact,
+   and it is a border style rather than a colour so it survives both themes
+   and does not lean on hue to carry meaning. */
+.sv2-preset-mode{border-style:dashed;}
+.sv2-scale-dir{flex:1 1 100%;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.sv2-scale .sv2-note{flex:1 1 100%;margin:0;}
+.sv2-action{margin-top:16px;display:flex;gap:8px;flex-wrap:wrap;}
+.sv2-danger{margin-top:20px;padding-top:16px;border-top:1px solid var(--danger-border);}
+.sv2-danger-title{font-family:var(--font-mono);font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--danger);margin-bottom:6px;}
+.sv2-danger-btn{margin-top:12px;color:var(--danger);border-color:var(--danger-border);}
+.sv2-danger-btn:active{background:var(--danger-bg);}
+.sv2-signout{background:var(--danger);color:var(--danger-on);border:none;padding:10px 18px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:6px;font-weight:500;}
+.sv2-signout:hover{opacity:0.85;}
+.sv2-signin{background:var(--text);color:var(--bg);border:none;padding:10px 18px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:6px;font-weight:500;}
+.sv2-signin:hover{opacity:0.88;}
+.sv2-note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.55;}
+/* v1.13 Item 1a — the stopped-queue panel. Danger rather than warning: a
+   quarantined item is terminal until the user acts, and the whole reason this
+   panel exists is that the previous treatment read as "in progress". */
+.sv2-stopped{margin-top:14px;padding:13px 14px;border:1px solid var(--danger-soft-border);border-inline-start:3px solid var(--danger);background:var(--danger-soft);border-radius:7px;}
+.sv2-stopped-head{font-family:var(--font-mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--danger);margin-bottom:7px;}
+.sv2-stopped-body{font-size:12.5px;line-height:1.55;color:var(--text);margin-bottom:6px;}
+.sv2-stopped-meta{font-family:var(--font-mono);font-size:10.5px;color:var(--muted);line-height:1.5;}
+/* The raw server error. Monospace and wrapped rather than truncated: it is
+   the one string worth copying verbatim into a bug report, and an ellipsis in
+   the middle of a Postgres constraint name destroys exactly what makes it
+   useful. */
+/* v1.13 Tier 3 — the calendar-feed panel. A disclosure, because the feature
+   has to be invisible until asked for. */
+.sv2-disclosure{display:flex;align-items:center;justify-content:space-between;width:100%;background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit;text-align:start;}
+.sv2-disclosure-chev{font-size:10px;color:var(--muted2);}
+.sv2-disclosure-body{margin-top:12px;}
+.feed-row{display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border);}
+.feed-row:last-of-type{border-bottom:none;}
+.feed-row-main{flex:1;min-width:0;}
+.feed-row-name{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+/* Host only, never the path — the path of a feed URL IS the capability. */
+.feed-row-meta{font-family:var(--font-mono);font-size:10px;color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.feed-row-err{font-family:var(--font-mono);font-size:10.5px;color:var(--danger);line-height:1.5;margin-top:3px;}
+.sv2-stopped-err{margin-top:7px;font-family:var(--font-mono);font-size:10.5px;color:var(--danger);word-break:break-word;line-height:1.5;}
+/* Issue #39 — the OS is blocking notifications, so the toggle below cannot do
+   anything. Uses the existing warning tokens rather than danger: nothing is
+   broken or destructive, the user simply has to grant something. Warm amber
+   also sits inside the paper palette where --danger's red does not. */
+.sv2-note-warn{color:var(--warning);background:var(--warning-bg);border:1px solid var(--warning-border);border-radius:7px;padding:10px 12px;}
+.sv2-inline-btn{display:block;margin-top:8px;background:none;border:1px solid var(--warning-border);color:var(--warning);padding:6px 12px;border-radius:6px;font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;}
+.sv2-inline-btn:active{background:var(--warning-border);}
+
+/* v1.12 Item 9 - profile + avatar. Paper-first: the preview is a real circle
+   on the page ground, the pickers are flat swatches, nothing floats. */
+.sv2-profile-preview{display:flex;align-items:center;gap:14px;margin-bottom:14px;}
+.sv2-avatar-lg{width:64px;height:64px;min-width:64px;font-size:26px;overflow:hidden;}
+.sv2-avatar-img{width:100%;height:100%;object-fit:cover;display:block;}
+.sv2-profile-name-field{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px;}
+.sv2-field-label{font-family:var(--font-mono);font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted2);}
+.sv2-name-input{width:100%;}
+
+/* auto-fill rather than a fixed count: the glyph set is a round dozen today and
+   a different number later, and a hardcoded column count would leave a ragged
+   last row the moment that changes. */
+.sv2-glyph-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(44px,1fr));gap:8px;margin-top:12px;}
+.sv2-glyph{aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:20px;background:var(--bg);border:1px solid var(--border2);border-radius:9px;color:var(--text);cursor:pointer;transition:border-color .15s,background .15s;}
+.sv2-glyph:hover{border-color:var(--muted2);}
+.sv2-glyph--on{border-color:var(--text);background:var(--surface2);}
+
+.sv2-color-grid{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}
+/* The selected swatch is marked with a ring drawn OUTSIDE the colour rather
+   than a border inside it, so the swatch still shows the full colour it is
+   offering - a border would eat 2px of the only thing being chosen. */
+.sv2-swatch{width:30px;height:30px;border-radius:50%;border:1px solid var(--border2);cursor:pointer;padding:0;transition:box-shadow .15s;}
+.sv2-swatch--on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--text);}
+
+/* v1.12 Items 6b/6c - supporter badge + Ko-fi alt-email self-link. */
+.sv2-supporter{display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 14px;border:1px solid var(--accent,#2e7d52);border-radius:10px;background:color-mix(in srgb,var(--accent,#2e7d52) 7%,transparent);}
+.sv2-supporter-mark{font-size:20px;line-height:1;color:var(--accent,#2e7d52);}
+.sv2-supporter-title{font-family:var(--font-display);font-size:15px;font-weight:600;color:var(--text);}
+.sv2-supporter-sub{font-family:var(--font-mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted);margin-top:3px;}
+/* A disclosure, not a field in everyone's face: most users are not supporters
+   and should not be nagged, but someone who paid and sees nothing will look. */
+.sv2-linkish{display:inline-block;margin-top:12px;background:none;border:none;padding:0;font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);text-decoration:underline;text-underline-offset:3px;cursor:pointer;}
+.sv2-linkish:hover{color:var(--text);}
+.sv2-kofi-link{margin-top:10px;padding-top:12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px;}
+/* The Ko-fi email's code field (limecore#55): the sign-in code field's look
+   (mono, spaced digits) at Settings scale, full width like that one. */
+.sv2-code-input{font-size:18px;font-weight:700;letter-spacing:0.3em;text-indent:0.3em;text-align:center;}
+/* Secondary actions under the Ko-fi field sit as a row of the same quiet
+   links as the disclosure itself, so the outlined button stays the one thing
+   to press and the amber button is left meaning "remove". */
+.sv2-kofi-links{display:flex;flex-wrap:wrap;gap:0 18px;}
+.sv2-linkish:disabled{opacity:0.5;cursor:default;text-decoration:none;}
+/* width:auto overrides the width:100% this input now inherits from the
+   shared control selector in forms.css. That inheritance is correct for a
+   field stacked in an .input-group and wrong for one sitting in a flex row
+   beside a toggle, where 100% means "take everything and squash the rest". */
+.sv2-time{width:auto;flex:0 0 auto;min-width:0;background:var(--bg);border:1px solid var(--border2);border-radius:7px;padding:6px 9px;font-family:var(--font-mono);font-size:13px;color:var(--text);}
+
+/* Technical details — quiet, monospace, clearly secondary */
+.sv2-tech{margin-top:4px;}
+.sv2-tech summary{font-family:var(--font-mono);font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted2);cursor:pointer;list-style:none;padding:4px 0;}
+.sv2-tech summary::-webkit-details-marker{display:none;}
+.sv2-tech summary::before{content:"▸ ";color:var(--muted2);}
+.sv2-tech[open] summary::before{content:"▾ ";}
+.sv2-tech-grid{margin-top:8px;display:flex;flex-direction:column;gap:6px;}
+.sv2-tech-item{display:flex;justify-content:space-between;gap:10px;font-family:var(--font-mono);font-size:11px;color:var(--muted);}
+.sv2-tech-item span:last-child{color:var(--muted2);text-align:end;word-break:break-all;}
+.sv2-link{color:var(--muted);text-decoration:underline;}
+`;
+
+function fmtTime(iso, t, lang) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return t('settings.justNow');
+  if (diff < 3600) return t('settings.minAgo', { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t('settings.hAgo', { n: Math.floor(diff / 3600) });
+  return d.toLocaleDateString(lang || 'en', { day: 'numeric', month: 'short' });
+}
+
+/** minutes past midnight -> the "HH:MM" an <input type="time"> expects. */
+function minutesToTimeInput(mins) {
+  const m = Math.max(0, Math.min(24 * 60 - 1, Number(mins) || 0));
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+/** "HH:MM" -> minutes, or null. A time input can legitimately be empty while
+ *  the user is mid-edit, and writing 0 for that would silently move the
+ *  ceiling to midnight instead of leaving it alone. */
+function timeInputToMinutes(value) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(value || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+// v1.15 (Item 12) — the Settings half of desktop updates. With nothing known
+// yet, the button re-asks GitHub (skipping the once-per-launch cache). Once a
+// newer release is known it downloads it, then installs it; when the updater
+// cannot handle that release, it opens the release page instead.
+function DesktopUpdateRow() {
+  const { t } = useTranslation();
+  const update = useDesktopUpdate();
+  const { status, canInstall } = update;
+  const pending = status === 'available' || status === 'downloading' || status === 'ready';
+  const value =
+    status === 'checking' ? t('settings.updateChecking')
+    : status === 'downloading' ? t('settings.updateDownloading', { percent: update.percent })
+    : pending ? `v${update.latest}`
+    : status === 'current' ? t('settings.updateCurrent')
+    : status === 'error' ? t('settings.updateFailed')
+    : '';
+  const label =
+    status === 'ready' ? t('settings.updateRestart')
+    : status === 'downloading' ? t('settings.updateDownloading', { percent: update.percent })
+    : status === 'available' ? (canInstall ? t('settings.updateDownload') : t('settings.updateOpen'))
+    : t('settings.updateCheck');
+  return (
+    <>
+      <div className="sv2-row">
+        <span className="sv2-row-label">{t('settings.updates')}</span>
+        <span className="sv2-row-value">{value}</span>
+      </div>
+      <div className="sv2-action">
+        <button
+          className={pending ? 'btn' : 'btn-outline'}
+          onClick={pending ? runDesktopUpdateAction : () => checkForDesktopUpdate(true)}
+          disabled={status === 'checking' || status === 'downloading'}
+        >
+          {label}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// v1.16 (#67) — the switch the privacy policy promises (NCC#50): Off stops
+// the once-a-day request to f-droid.org entirely, not merely the note. Kept to
+// the Off/On pair every other Settings switch uses. Android only, because it
+// is the only build F-Droid ships.
+function FdroidUpdateRow() {
+  const { t } = useTranslation();
+  const { enabled } = useFdroidUpdate();
+  return (
+    <>
+      <div className="sv2-row">
+        <span className="sv2-row-label">{t('settings.fdroidCheck')}</span>
+        <span className="sv2-row-value">
+          <span className="sv2-mode">
+            <button className={!enabled ? 'active' : ''} onClick={() => setUpdateCheckEnabled(false)}>
+              {t('settings.aiOff')}
+            </button>
+            <button className={enabled ? 'active' : ''} onClick={() => setUpdateCheckEnabled(true)}>
+              {t('settings.aiOn')}
+            </button>
+          </span>
+        </span>
+      </div>
+      <div className="sv2-note">{t('settings.fdroidCheckNote')}</div>
+    </>
+  );
+}
+
+export default function SettingsView({ state, dispatch, showFlash, session }) {
+  // v1.10 (Item 12) — ask the device what it can do before offering anything.
+  // A settings switch that silently does nothing is worse than an absent one,
+  // because the user cannot tell it apart from a bug. Null until the answer
+  // arrives, which is also the correct state on web (the probe resolves to all
+  // -false there and the section never renders).
+  // ── Feedback (v1.10) ──────────────────────────────────────────────────
+  const FEEDBACK_MAX = 4000;
+  const FEEDBACK_CATEGORIES = ['bug', 'idea', 'praise', 'other'];
+  const [fbCategory, setFbCategory] = useState('bug');
+  const [fbRating, setFbRating] = useState(0);
+  const [fbMessage, setFbMessage] = useState('');
+  // v1.17 (limecore#17): what the user sent, newest first, with its status.
+  // Null until loaded; stays null when signed out or the request fails, and
+  // then the list simply isn't shown (it is a courtesy, not a sync surface).
+  const [fbList, setFbList] = useState(null);
+  const sessionUserId = session?.user?.id;
+  useEffect(() => {
+    if (!sessionUserId) { setFbList(null); return undefined; }
+    let live = true;
+    sync.myFeedback()
+      .then((rows) => { if (live) setFbList((cur) => mergeFeedback(rows, cur)); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [sessionUserId]);
+
+  const [focusCaps, setFocusCaps] = useState(null);
+  // Remembers the time across an off/on round trip. Without it, switching the
+  // setting off and back on silently resets 22:30 to the 21:00 default, which
+  // reads as the app forgetting rather than as a default.
+  // Browser-notification permission, web only. Tracked in state because the
+  // answer changes in response to a prompt this component raises.
+  // Native detection is a constant for the lifetime of the process, so it is a
+  // plain const rather than state.
+  const isNative = Capacitor.isNativePlatform();
+  const [webPerm, setWebPerm] = useState(() => webNotifyPermission());
+  const lastStudyUntil = useRef(state.studyUntil ?? 21 * 60);
+  if (state.studyUntil !== null) lastStudyUntil.current = state.studyUntil;
+  useEffect(() => { let live = true; focusCapabilities().then((c) => { if (live) setFocusCaps(c); }); return () => { live = false; }; }, []);
+  const { t, i18n } = useTranslation();
+  const confirm = useConfirm();
+  const currentLang = (i18n.language || 'en').split('-')[0];
+  const langRef = useScrollSelectedIntoView();
+  const lang = currentLang; // for locale-aware date formatting in fmtTime
+  const [pulling, setPulling] = useState(false);
+  const [lastPullAt, setLastPullAt] = useState(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [draining, setDraining] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const outboxStatus = useSyncExternalStore(
+    outbox.subscribe,
+    outbox.getStatus,
+    outbox.getStatus,
+  );
+  const realtimeState = useSyncExternalStore(
+    sync.subscribeRealtimeState,
+    sync.getRealtimeState,
+    sync.getRealtimeState,
+  );
+
+  const onRetryNow = useCallback(async () => {
+    setDraining(true);
+    try {
+      // `force` clears quarantine and resets the attempt counters. Pressing
+      // this button is an explicit "try everything again" — the one case where
+      // an item parked past MAX_ATTEMPTS should get another go.
+      const remaining = await outbox.drain({ force: true });
+      showFlash(remaining === 0 ? t('settings.queueDrained') : t('settings.stillPending', { count: remaining }));
+    } finally {
+      setDraining(false);
+    }
+  }, [showFlash, t]);
+
+  // v1.13 — week start. Only three options are offered, not seven: Monday
+  // (ISO 8601 and most of Europe), Saturday (much of the Middle East) and
+  // Sunday (US, Canada, Brazil, India, Indonesia, Japan). A timetable that
+  // starts on Wednesday is not a thing anyone has, and seven options would
+  // make the real three harder to find.
+  const [weekStartPref, setWeekStartPref] = useState(() => preferredWeekStart());
+  // v1.13 (#54) — when does the user's day end? A night owl's 01:00 session is
+  // the end of one night, not the start of a day, and the calendar splitting it
+  // in two breaks a streak they actually kept.
+  const [dayStartPref, setDayStartPref] = useState(() => preferredDayStart());
+  const [dueWindowPref, setDueWindowPref] = useState(() => preferredDueWindow());
+  const settingsLocale = formatLocale();
+  const dayNames = useMemo(
+    // Index by real getDay() value, so `dayNames[6]` is Saturday whatever the
+    // user's week starts on.
+    () => weekdayLabels(0, settingsLocale),
+    [settingsLocale],
+  );
+  // What "Automatic" resolves to right now, named — so the option says what
+  // it will do rather than making the user try it to find out.
+  const autoDayName = useMemo(() => {
+    const prev = weekStartPref;
+    // `resolveWeekStart` consults the override first, so it has to be asked
+    // what the LOCALE alone would say. Temporarily clearing it is the honest
+    // way to get that without duplicating the CLDR logic here.
+    setPreferredWeekStart(null);
+    const auto = resolveWeekStart(settingsLocale);
+    setPreferredWeekStart(prev);
+    return dayNames[auto];
+  }, [settingsLocale, dayNames, weekStartPref]);
+
+  const subjects = Object.values(state.courses || {}).filter((c) => !c.deletedAt);
+  const grades = (state.grades || []).filter((g) => !g.deletedAt);
+  const sessions = (state.studySessions || []).filter((s) => !s.deletedAt);
+
+  const mode = state.gradeMode || 'ib';
+  // The draft holds raw strings so a half-typed value survives a keystroke:
+  // normalising on every change would snap an emptied field back to its default
+  // and make the input impossible to edit. The reducer always receives the
+  // normalised value, so the rest of the app never sees a partial scale.
+  const [scaleDraft, setScaleDraft] = useState(() => ({ ...scaleFor('custom', state.customScale) }));
+  const activeScale = normalizeScale(scaleDraft);
+  const setScale = useCallback((patch) => {
+    setScaleDraft((prev) => {
+      const next = { ...prev, ...patch };
+      dispatch({ type: 'SET_CUSTOM_SCALE', scale: next });
+      return next;
+    });
+  }, [dispatch]);
+
+  // Goes through the outbox rather than straight to Supabase, so a report
+  // written on a train is not lost — enqueue persists first and drains on the
+  // next connection. enqueue() does not throw and does not need awaiting, so
+  // there is no failure path to show here; a delivery problem surfaces in the
+  // Cloud sync panel like every other queued write.
+  const handleSendFeedback = useCallback(() => {
+    const message = fbMessage.trim();
+    if (!message) { showFlash(t('settings.feedbackEmpty')); return; }
+    if (!session) { showFlash(t('settings.feedbackSignIn')); return; }
+    const id = newFeedbackId();
+    outbox.enqueue('submit_feedback', {
+      id,
+      category: fbCategory,
+      rating: fbRating || null,
+      message,
+      appVersion: pkg.version,
+      platform: Capacitor.getPlatform(),
+    });
+    // Shown at once, as "Sent". The outbox may not deliver it for a while
+    // (offline), and the list should not look as if nothing happened.
+    setFbList((cur) => mergeFeedback(
+      [{ id, app: 'studydesk', category: fbCategory, message, created_at: new Date().toISOString(), status: 'new' }],
+      cur,
+    ));
+    setFbMessage('');
+    setFbRating(0);
+    showFlash(t('settings.feedbackThanks'));
+  }, [fbMessage, fbCategory, fbRating, session, showFlash, t]);
+
+  const onSignOut = useCallback(async () => {
+    // v1.18.1 (StudyDesk#169): another tab has replaced the data this page
+    // shows. Its wipe would clear the other account's outbox and session and
+    // mark this stale page current again; reload instead.
+    if (isPageStale()) return reloadStalePage();
+    // v1.18.1 (StudyDesk#139): the wipe below drops whatever has not reached
+    // the cloud yet. Say how much, rather than a confirm that promises the
+    // data "stays in the cloud".
+    // v1.18.1 (StudyDesk#161): a note edit still in its 1.5 s debounce is
+    // queued first, so it is counted.
+    requestNoteFlush();
+    const unsent = outbox.getStatus().pending;
+    const question = unsent > 0
+      ? t('settings.signOutUnsynced', { count: unsent })
+      : t('settings.signOutConfirm');
+    if (!(await confirm(question))) return;
+    setSigningOut(true);
+    try {
+      // Drain-then-wipe order preserved from the v1.1.1 / AUDIT-SD-FSG-2 work:
+      // clear the outbox + reset reducer state BEFORE the auth round-trip so a
+      // queued retry can't replay user A's writes against the next user, and a
+      // shared device shows no residue.
+      // v1.12 Items 5 and 9: the entitlement (a paid perk) and the cached
+      // avatar URL go too. v1.18.1: one list for every wipe, calendar feeds
+      // included (src/lib/accountWipe.js).
+      wipeAccountLocalData();
+      dispatch({ type: 'RESET_AFTER_SIGNOUT' });
+      setGuestMode(true);
+      window.dispatchEvent(new CustomEvent('studydesk:guest-mode-changed'));
+      // v1.18.1 (limecore#59 §1): the local data is wiped, so it has no owner.
+      clearOwner();
+      // v1.18.1 (StudyDesk#139): offline, auth-js resolves the session first
+      // (an expired token means its refresh retry chain) and then returns a
+      // network error WITHOUT removing the session: the user saw "signed out"
+      // and came back signed in. Give it a few seconds; past that, or on any
+      // error, remove the stored session here and tell App, since auth-js
+      // emits no SIGNED_OUT then.
+      let timer;
+      const call = supabase.auth.signOut({ scope: 'local' }).then(({ error }) => error ?? null, (error) => error);
+      const outcome = await Promise.race([
+        call,
+        new Promise((res) => { timer = setTimeout(() => res('timeout'), SIGN_OUT_WAIT_MS); }),
+      ]);
+      clearTimeout(timer);
+      if (outcome) {
+        console.warn('[studydesk] sign-out did not reach the server; removing the local session:', outcome === 'timeout' ? 'timed out' : outcome.message);
+        await clearStoredSession();
+        window.dispatchEvent(new CustomEvent('studydesk:signed-out-local'));
+        // The call is still queued behind any refresh in flight, which may
+        // save the old session again first. When the call finally settles,
+        // remove it once more if the call failed, then let App accept
+        // sessions again.
+        void call.then(async (lateError) => {
+          if (lateError) await clearStoredSession();
+          window.dispatchEvent(new CustomEvent('studydesk:sign-out-settled'));
+        });
+      }
+      showFlash(t('settings.signedOutLocal'));
+    } catch (e) {
+      showFlash(t('settings.signOutFailed', { msg: e.message }));
+    } finally {
+      setSigningOut(false);
+    }
+  }, [confirm, showFlash, dispatch, t]);
+
+  // ── GDPR Art. 20 — portability ─────────────────────────────────────────────
+  const onExport = useCallback(async () => {
+    try {
+      const name = await downloadExport(state, session);
+      showFlash(t('settings.exportDone', { name }));
+    } catch (e) {
+      showFlash(t('settings.exportFailed', { msg: e.message }));
+    }
+  }, [state, session, showFlash, t]);
+
+  // ── GDPR Art. 17 — erasure ─────────────────────────────────────────────────
+  // Two confirmations, because this is irreversible and there is no recovery
+  // window: the account row is gone and every cascade has fired.
+  const onDeleteAccount = useCallback(async () => {
+    // v1.18.1 (StudyDesk#169): never act on another tab's account (see onSignOut).
+    if (isPageStale()) return reloadStalePage();
+    if (!(await confirm(t('settings.deleteAccountConfirm1')))) return;
+    if (!(await confirm(t('settings.deleteAccountConfirm2')))) return;
+    setDeleting(true);
+    try {
+      await deleteAccount({
+        clearLocal: async () => {
+          wipeAccountLocalData();
+          // v1.18.1 (limecore#59 §1): the data is gone, so it has no owner;
+          // otherwise guest data made afterwards would be wiped by the next
+          // account to sign in.
+          clearOwner();
+          dispatch({ type: 'RESET_AFTER_SIGNOUT' });
+          for (const k of ['studydesk-v1', 'studydesk-needs-initial-push',
+                           'studydesk-onboarded', 'studydesk-grade-mode', 'sd-timer']) {
+            try { localStorage.removeItem(k); } catch { /* private mode */ }
+          }
+          setGuestMode(true);
+          window.dispatchEvent(new CustomEvent('studydesk:guest-mode-changed'));
+        },
+      });
+      showFlash(t('settings.deleteAccountDone'));
+    } catch (e) {
+      showFlash(t('settings.deleteAccountFailed', { msg: e.message }));
+    } finally {
+      setDeleting(false);
+    }
+  }, [confirm, dispatch, showFlash, t]);
+
+  // v1.3.1 — guests sign in from here now that the topbar button is gone.
+  // Flipping guestMode off routes the app back to AuthGate.
+  const onSignIn = useCallback(() => {
+    setGuestMode(false);
+    window.dispatchEvent(new CustomEvent('studydesk:guest-mode-changed'));
+  }, []);
+
+  const onPullNow = useCallback(async () => {
+    if (!session) { showFlash(t('settings.notSignedIn')); return; }
+    setPulling(true);
+    try {
+      const remote = await sync.pullAllStudyData();
+      dispatch({ type: 'MERGE_REMOTE', remote });
+      // v1.12 Item 1 (#38) — same repair as the cold-start pull in App.jsx.
+      // Wired here too because this button is what a user reaches for when
+      // sync looks wrong, and it is the one the reporter was pressing.
+      reconcileUnsynced(state, remote, outbox);
+      setLastPullAt(new Date().toISOString());
+      showFlash(t('settings.syncedSummary', { subjects: remote.subjects.length, grades: remote.grades.length, sessions: remote.sessions.length }));
+    } catch (e) {
+      showFlash(t('settings.pullFailed', { msg: e.message }));
+    } finally {
+      setPulling(false);
+    }
+  }, [session, state, dispatch, showFlash, t]);
+
+  const userEmail = session?.user?.email || '—';
+  // v1.14 Item 12 — the same resolved profile the topbar draws from. The hero
+  // was reading the email directly and rendering bare initials, so a user who
+  // had set a name AND a photo in the block two sections below this one saw
+  // neither of them here.
+  const account = useAccountAvatar(session);
+  const userId = session?.user?.id;
+  const userIdShort = userId ? `${userId.slice(0, 8)}…${userId.slice(-4)}` : '—';
+  const provider = session?.user?.app_metadata?.provider || 'email';
+  const appVersion = pkg.version;
+
+  return (
+    <>
+      <style>{css}</style>
+      <div className="sv2-wrap">
+        {/* ── Account hero ── */}
+        <div className="sv2-section">
+          <div className="sv2-hero">
+            <div className="sv2-avatar" style={session ? account.tintStyle : undefined}>
+              {session ? <AccountAvatar avatar={account} session={session}/> : <GuestAvatar/>}
+            </div>
+            <div className="sv2-hero-info">
+              <div className="sv2-hero-name">{session ? (account.displayName || userEmail) : t('settings.guest')}</div>
+              {/* The address stays visible whenever it is no longer the title:
+                  "which account am I signed into" is the question this hero
+                  exists to answer, and a display name does not answer it. */}
+              {session && account.displayName && <div className="sv2-hero-mail">{userEmail}</div>}
+              <div className="sv2-hero-status">
+                <span className="sv2-dot" style={{ background: session ? 'var(--success)' : 'var(--muted2)' }} />
+                {session ? t('settings.signedInProvider', { provider }) : t('settings.localOnly')}
+              </div>
+            </div>
+          </div>
+          <div className="sv2-action">
+            {session ? (
+              <button className="sv2-signout" onClick={onSignOut} disabled={signingOut}>
+                {signingOut ? t('settings.signingOut') : t('settings.signOut')}
+              </button>
+            ) : (
+              <button className="sv2-signin" onClick={onSignIn}>{t('settings.signInToSync')}</button>
+            )}
+          </div>
+          {/* v1.17 (limecore#10): email/password accounts only. */}
+          {session && <ChangeEmail session={session} showFlash={showFlash} />}
+          {!session && (
+            <div className="sv2-note">
+              {t('settings.guestNote')}
+            </div>
+          )}
+        </div>
+
+        {/* ── Profile (v1.12 Item 9) — renders nothing for a guest, who has no
+            server-side profile to edit. ── */}
+        <ProfileSection session={session} showFlash={showFlash} />
+
+        {/* ── Appearance (v1.13) ──
+            Above Language because it is the setting people come to Settings
+            for, and because the supporter themes need to be seen. ── */}
+        <Appearance />
+
+        {/* ── Language ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.language')}</div>
+          <div className="sv2-lang-grid" ref={langRef}>
+            {SUPPORTED_LANGS.map((code) => (
+              <button
+                key={code}
+                className={`sv2-lang-btn${currentLang === code ? ' sv2-lang-btn--on' : ''}`}
+                onClick={() => setLanguage(code)}
+                aria-pressed={currentLang === code}
+              >
+                {LANGUAGE_NAMES[code]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Feedback (v1.10) ──
+            Deliberately in the app rather than a survey link: a link leaves
+            the app, cannot work offline, and arrives without the app version
+            or platform, which is most of what makes a report actionable.
+            v1.15 Item 4 — moved up from sixteenth of eighteen sections, below
+            Your data, to right under Language. Same fix NCC got in v1.13: a
+            form nobody scrolls down to is hardly easier to reach than no form
+            at all. Nothing else in it changed. */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.feedback')}</div>
+          <div className="sv2-note">{t('settings.feedbackBlurb')}</div>
+
+          <div className="sv2-fb-cats" role="group" aria-label={t('settings.feedbackCategory')}>
+            {FEEDBACK_CATEGORIES.map((c) => (
+              <button
+                key={c}
+                type="button"
+                className={`sv2-fb-cat${fbCategory === c ? ' sv2-fb-cat--on' : ''}`}
+                onClick={() => setFbCategory(c)}
+                aria-pressed={fbCategory === c}
+              >
+                {t(`settings.fbCat.${c}`)}
+              </button>
+            ))}
+          </div>
+
+          <div className="sv2-fb-stars" role="group" aria-label={t('settings.feedbackRating')}>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={`sv2-fb-star${n <= fbRating ? ' sv2-fb-star--on' : ''}`}
+                onClick={() => setFbRating(n === fbRating ? 0 : n)}
+                aria-label={t('settings.feedbackRatingN', { n })}
+                aria-pressed={n <= fbRating}
+              >
+                {n <= fbRating ? '★' : '☆'}
+              </button>
+            ))}
+          </div>
+
+          <textarea
+            className="sv2-fb-text"
+            value={fbMessage}
+            maxLength={FEEDBACK_MAX}
+            onChange={(e) => setFbMessage(e.target.value)}
+            placeholder={t('settings.feedbackPlaceholder')}
+            aria-label={t('settings.feedback')}
+          />
+          <div className="sv2-fb-count">{fbMessage.length}/{FEEDBACK_MAX}</div>
+
+          <div className="sv2-action">
+            <button
+              className="btn-outline"
+              onClick={handleSendFeedback}
+              disabled={!fbMessage.trim()}
+            >
+              {t('settings.feedbackSend')}
+            </button>
+          </div>
+          <div className="sv2-note">{t('settings.feedbackMeta', { app: 'Study Buddy', version: appVersion })}</div>
+
+          {/* v1.17 (limecore#17): what you sent, and the good news when there
+              is some. Positive states only; see lib/feedbackStatus.js. */}
+          {fbList?.length > 0 && (
+            <div className="sv2-fb-list">
+              <div className="sv2-fb-list-title">{t('settings.fbYours')}</div>
+              {SHOW_FEEDBACK_STATUS && <div className="sv2-note sv2-fb-list-note">{t('settings.fbYoursNote')}</div>}
+              <ul>
+                {fbList.map((r) => {
+                  const st = feedbackStatus(r);
+                  const when = new Date(r.created_at).toLocaleDateString(settingsLocale, { day: 'numeric', month: 'short', year: 'numeric' });
+                  return (
+                    <li key={r.id} className="sv2-fb-item">
+                      <div className="sv2-fb-item-head">
+                        <span className="sv2-fb-item-meta">
+                          {when} · {t(`settings.fbCat.${r.category}`, { defaultValue: r.category })}
+                          {r.app && r.app !== 'studydesk' && ` · ${APP_NAMES[r.app] || r.app}`}
+                        </span>
+                        {st && (
+                          <span className={`sv2-fb-status sv2-fb-status--${st.key === 'shippedIn' ? 'shipped' : st.key}`}>
+                            {t(`settings.fbStatus.${st.key}`, { version: st.version })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="sv2-fb-item-text">{r.message}</div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* ── Week start (v1.13 Tier 2) ──
+             The locale answer is already correct — `resolveWeekStart` reads
+             CLDR via Intl.Locale.weekInfo, so ar-EG gets Saturday and en-GB
+             Monday. This exists because the report behind it is not a locale
+             bug: it is a person whose locale genuinely says Sunday who wants
+             Monday anyway. Their timetable starts on Monday; their region's
+             average does not. ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.weekStartLbl')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.weekStart')}</span>
+            <span className="sv2-row-value">
+              <select
+                value={weekStartPref === null ? 'auto' : String(weekStartPref)}
+                onChange={(e) => {
+                  const v = e.target.value === 'auto' ? null : Number(e.target.value);
+                  setPreferredWeekStart(v);
+                  setWeekStartPref(v);
+                  // The grids read `resolveWeekStart` at render, so nothing
+                  // needs to be pushed — but they will not re-render on their
+                  // own, because a localStorage write is invisible to React.
+                  showFlash(t('settings.weekStartSaved'));
+                }}
+              >
+                <option value="auto">{t('settings.weekStartAuto', { day: autoDayName })}</option>
+                {[1, 6, 0].map((d) => (
+                  <option key={d} value={d}>{dayNames[d]}</option>
+                ))}
+              </select>
+            </span>
+          </div>
+          <div className="sv2-note">{t('settings.weekStartNote')}</div>
+        </div>
+
+        {/* ── Day boundary (v1.13, #54) ──
+             Asked for in the same breath as the streak bug it causes: "it's
+             common for people to study during the night. Those sessions, even
+             though they are technically a new day, feel more like the same
+             one." Midnight stays the default, so nobody's numbers move unless
+             they say so. Options stop at 06:00 — past that a "day" is no
+             longer recognisable as one, and a free number field would invite
+             23, which silently relabels every daytime session as yesterday's.
+             ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.dayStartLbl')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.dayStart')}</span>
+            <span className="sv2-row-value">
+              <select
+                value={String(dayStartPref)}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setPreferredDayStart(v);
+                  setDayStartPref(v);
+                  showFlash(t('settings.dayStartSaved'));
+                }}
+              >
+                {DAY_START_CHOICES.map((h) => (
+                  <option key={h} value={h}>
+                    {h === 0 ? t('settings.dayStartMidnight') : `${String(h).padStart(2, '0')}:00`}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+          <div className="sv2-note">{t('settings.dayStartNote')}</div>
+        </div>
+
+        {/* ── Due window (v1.14 Item 4, #51) ──
+             "if you have put in all your assignments for the semester it says
+             you have like 20 assignments due which looks kind of alarming."
+             The count was right and the word was wrong — open is not due. The
+             default is per-type rather than one number, because a reading due
+             Friday and an essay due in ten days are both genuinely due and no
+             single horizon is honest about both. Anyone who wants the old
+             behaviour back picks "everything". ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.dueWindowLbl')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.dueWindow')}</span>
+            <span className="sv2-row-value">
+              <select
+                value={String(dueWindowPref)}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const v = (raw === 'smart' || raw === 'all') ? raw : Number(raw);
+                  setPreferredDueWindow(v);
+                  setDueWindowPref(v);
+                  showFlash(t('settings.dueWindowSaved'));
+                }}
+              >
+                {DUE_WINDOW_CHOICES.map((w) => (
+                  <option key={w} value={String(w)}>
+                    {w === 'smart'
+                      ? t('settings.dueWindowSmart')
+                      : w === 'all'
+                        ? t('settings.dueWindowAll')
+                        : t('settings.dueWindowDays', { count: w })}
+                  </option>
+                ))}
+              </select>
+            </span>
+          </div>
+          <div className="sv2-note">{t('settings.dueWindowNote')}</div>
+        </div>
+
+        {/* ── Cloud sync ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.cloudSync')}</div>
+          <div className="sv2-stats">
+            <div className="sv2-stat"><div className="sv2-stat-num">{subjects.length}</div><div className="sv2-stat-lbl">{t('settings.subjects')}</div></div>
+            <div className="sv2-stat"><div className="sv2-stat-num">{grades.length}</div><div className="sv2-stat-lbl">{t('settings.gradesLbl')}</div></div>
+            <div className="sv2-stat"><div className="sv2-stat-num">{sessions.length}</div><div className="sv2-stat-lbl">{t('settings.sessionsLbl')}</div></div>
+          </div>
+          {/* limecore#24: this row said "Realtime active" for every signed-in
+              user, including the two months the channel was rejected. It now
+              reports what the channel is doing. */}
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.connection')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-dot" style={{ background: !session ? 'var(--muted2)' : realtimeState === 'live' ? '#2e7d52' : realtimeState === 'down' ? 'var(--warning)' : 'var(--muted2)' }} />
+              {!session ? t('settings.offlineLocal')
+                : realtimeState === 'live' ? t('settings.realtimeActive')
+                : realtimeState === 'down' ? t('settings.realtimeOff')
+                : t('settings.realtimeConnecting')}
+            </span>
+          </div>
+          {session && realtimeState === 'down' && (
+            <div className="sv2-note" style={{ marginTop: 0, marginBottom: 9 }}>{t('settings.realtimeOffNote')}</div>
+          )}
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.pendingQueue')}</span>
+            <span className="sv2-row-value">
+              {outboxStatus.pending === 0 ? (
+                <><span className="sv2-dot" style={{ background: 'var(--success)' }} />{t('settings.allSynced')}</>
+              ) : (
+                <>
+                  <span className="sv2-dot" style={{ background: outboxStatus.stuck > 0 ? 'var(--danger)' : 'var(--warning)' }} />
+                  {t('settings.pendingCount', { count: outboxStatus.pending })}{outboxStatus.stuck > 0 && ` ${t('settings.stuck', { count: outboxStatus.stuck })}`}
+                </>
+              )}
+            </span>
+          </div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.lastPush')}</span>
+            <span className="sv2-row-value">{fmtTime(outboxStatus.lastSuccessAt, t, lang)}</span>
+          </div>
+          {lastPullAt && (
+            <div className="sv2-row">
+              <span className="sv2-row-label">{t('settings.lastPull')}</span>
+              <span className="sv2-row-value">{fmtTime(lastPullAt, t, lang)}</span>
+            </div>
+          )}
+          {outboxStatus.lastError && (
+            <div className="sv2-row">
+              <span className="sv2-row-label">{t('settings.lastError')}</span>
+              <span className="sv2-row-value" style={{ color: 'var(--danger)', fontSize: 11 }}>{outboxStatus.lastError}</span>
+            </div>
+          )}
+          {/* ── v1.13 Item 1a — a queue that has stopped says so ──
+              v1.12 added quarantine so a poison item stops burning retries,
+              which was right, and then reported it as a parenthetical after
+              the pending count. "3 pending (1 stuck)" is a number, not a
+              statement: it does not say the queue has STOPPED, does not say
+              what stopped it, and reads as progress.
+
+              Quarantine is a terminal state until the user intervenes, so it
+              gets its own panel with the thing that stopped, when it stopped,
+              and the button that clears it. The ordinary "Retry now" is not
+              enough on its own — it is the same control for two very
+              different situations, and a user watching "3 pending" tick down
+              has no reason to press anything. ── */}
+          {outboxStatus.stuck > 0 && (
+            <div className="sv2-stopped" role="status">
+              <div className="sv2-stopped-head">{t('settings.queueStoppedTitle')}</div>
+              <p className="sv2-stopped-body">
+                {t('settings.queueStoppedBody', { count: outboxStatus.stuck })}
+              </p>
+              {outboxStatus.stuckKinds?.length > 0 && (
+                <div className="sv2-stopped-meta">
+                  {t('settings.queueStoppedWhat', {
+                    kinds: outboxStatus.stuckKinds.map((k) => t(`settings.kind.${k}`, k)).join(', '),
+                  })}
+                </div>
+              )}
+              {outboxStatus.stuckSince && (
+                <div className="sv2-stopped-meta">
+                  {t('settings.queueStoppedSince', { when: fmtTime(outboxStatus.stuckSince, t, lang) })}
+                </div>
+              )}
+              {outboxStatus.lastError && (
+                <div className="sv2-stopped-err">{outboxStatus.lastError}</div>
+              )}
+              <div className="sv2-action">
+                <button className="btn" onClick={onRetryNow} disabled={draining || !session}>
+                  {draining ? t('settings.retrying') : t('settings.queueStoppedRetry')}
+                </button>
+              </div>
+              {/* Nothing here can be retried without a session, and a button
+                  that cannot work is worse than one that explains itself. */}
+              {!session && <div className="sv2-stopped-meta">{t('settings.queueStoppedSignIn')}</div>}
+            </div>
+          )}
+          {session && (
+            <div className="sv2-action">
+              <button className="btn-outline" onClick={onPullNow} disabled={pulling}>
+                {pulling ? t('settings.pulling') : t('settings.pullLatest')}
+              </button>
+              {outboxStatus.pending > 0 && outboxStatus.stuck === 0 && (
+                <button className="btn-outline" onClick={onRetryNow} disabled={draining}>
+                  {draining ? t('settings.retrying') : t('settings.retryNow')}
+                </button>
+              )}
+            </div>
+          )}
+          <div className="sv2-note">
+            {t('settings.syncNote')}
+          </div>
+        </div>
+
+        {/* ── Calendar feed (v1.13 Tier 3, #44) ──
+             Below the sync block and collapsed by default. Integration policy
+             test 3: invisible when unused — no tab, no nav entry, no empty
+             state anywhere else in the app. ── */}
+        <CalendarFeeds state={state} dispatch={dispatch} session={session} showFlash={showFlash} />
+
+        {/* ── Reminders ──
+             Onboarding's "Maybe later" now genuinely declines, which makes
+             this row necessary: without it, declining once was irreversible
+             short of a reinstall. */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.remindersLbl')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.reminders')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={!state.notifEnabled ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_NOTIF_ENABLED', on: false })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.notifEnabled ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_NOTIF_ENABLED', on: true })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.notifEnabled ? t('settings.remindersOnNote') : t('settings.remindersOffNote')}
+          </div>
+        </div>
+
+        {/* ── Planning (v1.10, owner feedback) ──────────────────────────
+            The calendar's free-window list used to end at the last thing
+            already in the day, so an afternoon that finished at 15:00 reported
+            no free time after 15:00 — which is exactly the time a student
+            plans into. This says how late you are actually willing to work. */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.planningLbl')}</div>
+
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.studyUntil')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={state.studyUntil === null ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_STUDY_UNTIL', minutes: null })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.studyUntil !== null ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_STUDY_UNTIL', minutes: lastStudyUntil.current })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+              {state.studyUntil !== null && (
+                <input
+                  type="time"
+                  className="sv2-time"
+                  aria-label={t('settings.studyUntil')}
+                  value={minutesToTimeInput(state.studyUntil)}
+                  onChange={(e) => {
+                    const v = timeInputToMinutes(e.target.value);
+                    if (v !== null) dispatch({ type: 'SET_STUDY_UNTIL', minutes: v });
+                  }}
+                />
+              )}
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.studyUntil === null
+              ? t('settings.studyUntilOffNote')
+              : t('settings.studyUntilOnNote', { time: minutesToTimeInput(state.studyUntil) })}
+          </div>
+
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.planRemindLead')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode compact">
+                {[null, 10, 30, 60].map((m) => (
+                  <button
+                    key={m === null ? 'off' : m}
+                    className={state.planRemindLead === m ? 'active' : ''}
+                    onClick={() => dispatch({ type: 'SET_PLAN_REMIND', lead: m })}
+                  >
+                    {m === null ? t('settings.aiOff') : t('settings.minsShort', { n: m })}
+                  </button>
+                ))}
+              </span>
+            </span>
+          </div>
+
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.planRemindStart')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={!state.planRemindStart ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_PLAN_REMIND', atStart: false })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.planRemindStart ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_PLAN_REMIND', atStart: true })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.notifEnabled
+              ? t('settings.planRemindNote')
+              : t('settings.planRemindBlocked')}
+          </div>
+
+          {/* Web only. On Android these are OS alarms and there is nothing to
+              grant here beyond the notification permission the app already
+              asks for; showing a second, differently-worded control there
+              would imply two separate things to switch on. */}
+          {!isNative && webNotifySupported() && (
+            <>
+              <div className="sv2-row">
+                <span className="sv2-row-label">{t('settings.webNotify')}</span>
+                <span className="sv2-row-value">
+                  {webPerm === 'granted' ? (
+                    <span className="sv2-row-value">{t('settings.webNotifyOn')}</span>
+                  ) : webPerm === 'denied' ? (
+                    <span className="sv2-row-value" style={{ color: 'var(--danger)' }}>
+                      {t('settings.webNotifyBlocked')}
+                    </span>
+                  ) : (
+                    <button
+                      className="btn-outline"
+                      onClick={async () => setWebPerm(await requestWebNotifyPermission())}
+                    >
+                      {t('settings.webNotifyAsk')}
+                    </button>
+                  )}
+                </span>
+              </div>
+              <div className="sv2-note">
+                {webPerm === 'denied'
+                  ? t('settings.webNotifyDeniedNote')
+                  : t('settings.webNotifyNote')}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Lock In (v1.10, Item 12) — native only ── */}
+        {/* Gated on being native, NOT on notifications being allowed (#39).
+            The old gate hid this whole section when the OS was blocking
+            notifications — which is exactly the state a user needs to be able
+            to see and fix. Screen pinning also works without them. */}
+        {focusCaps?.sdk > 0 && (
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.lockInLbl')}</div>
+
+          {focusCaps.notifications === false && (
+            <div className="sv2-note sv2-note-warn">
+              {t('settings.focusChipBlocked')}
+              <button
+                className="sv2-inline-btn"
+                onClick={async () => {
+                  const ok = await ensureNotificationPermission();
+                  setFocusCaps((c) => ({ ...c, notifications: ok }));
+                  showFlash(ok ? t('settings.focusChipUnblocked') : t('settings.focusChipStillBlocked'));
+                }}
+              >
+                {t('settings.focusChipAllow')}
+              </button>
+            </div>
+          )}
+
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.focusChip')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={!state.focusChip ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_FOCUS_CHIP', on: false })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.focusChip ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_FOCUS_CHIP', on: true })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.focusChip
+              ? (focusCaps.promotedOngoing ? t('settings.focusChipOnNote') : t('settings.focusChipOnNoteLegacy'))
+              : t('settings.focusChipOffNote')}
+          </div>
+
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.focusPin')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={!state.focusPin ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_FOCUS_PIN', on: false })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.focusPin ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_FOCUS_PIN', on: true })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.focusPin ? t('settings.focusPinOnNote') : t('settings.focusPinOffNote')}
+          </div>
+        </div>
+        )}
+
+        {/* ── Grades ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.gradesLbl')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.gradeScale')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button className={mode === 'ib' ? 'active' : ''} onClick={() => dispatch({ type: 'SET_GRADE_MODE', mode: 'ib' })}>IB</button>
+                <button className={mode === 'us' ? 'active' : ''} onClick={() => dispatch({ type: 'SET_GRADE_MODE', mode: 'us' })}>US</button>
+                <button className={mode === 'custom' ? 'active' : ''} onClick={() => dispatch({ type: 'SET_GRADE_MODE', mode: 'custom' })}>{t('gv.modeCustom')}</button>
+              </span>
+            </span>
+          </div>
+          {/* SD-F4 — the editor only appears once Custom is the active mode, so
+              the section stays a single row for the IB and US majority. */}
+          {mode === 'custom' && (
+            <div className="sv2-scale">
+              {/* v1.14 Item 2 — above the fields, not below them: the point is
+                  to be seen before someone starts typing four numbers. */}
+              {/* Two groups under two labels, because one label cannot be
+                  honest about both. A scale chip is something you START FROM
+                  and then edit; a mode chip SWITCHES AWAY from Custom to a
+                  scale that already exists in its own right, and calling that
+                  "start from" would describe the opposite of what it does. */}
+              <div className="sv2-scale-presets">
+                <span className="sv2-row-label">{t('settings.scalePresets')}</span>
+                {SCALE_PRESETS.filter((p) => !p.mode).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="sv2-preset"
+                    onClick={() => setScale(p.scale)}
+                  >
+                    {t(p.labelKey)}
+                  </button>
+                ))}
+              </div>
+              <div className="sv2-scale-presets">
+                <span className="sv2-row-label">{t('settings.scaleSwitchTo')}</span>
+                {SCALE_PRESETS.filter((p) => p.mode).map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className="sv2-preset sv2-preset-mode"
+                    onClick={() => dispatch({ type: 'SET_GRADE_MODE', mode: p.mode })}
+                  >
+                    {t(p.labelKey)}
+                  </button>
+                ))}
+              </div>
+              <label className="sv2-scale-field">
+                <span>{t('settings.scaleMin')}</span>
+                <input
+                  type="number" step="0.5" value={scaleDraft.min}
+                  onChange={(e) => setScale({ min: e.target.value })}
+                />
+              </label>
+              <label className="sv2-scale-field">
+                <span>{t('settings.scaleMax')}</span>
+                <input
+                  type="number" step="0.5" value={scaleDraft.max}
+                  onChange={(e) => setScale({ max: e.target.value })}
+                />
+              </label>
+              <label className="sv2-scale-field">
+                <span>{t('settings.scalePass')}</span>
+                <input
+                  type="number" step="0.5" value={scaleDraft.passMark}
+                  onChange={(e) => setScale({ passMark: e.target.value })}
+                />
+              </label>
+                <label className="sv2-scale-field" style={{ flex: '1 1 100%' }}>
+            <span>{t('settings.scaleName')}</span>
+            <input
+              type="text"
+              value={scaleDraft.name || ''}
+              placeholder={t('gv.customAverage')}
+              onChange={(e) => setScale({ name: e.target.value })}
+            />
+          </label>
+        <div className="sv2-scale-dir">
+                <span className="sv2-row-label">{t('settings.scaleDirection')}</span>
+                <span className="sv2-mode">
+                  <button
+                    className={scaleDraft.direction === 'up' ? 'active' : ''}
+                    onClick={() => setScale({ direction: 'up' })}
+                  >
+                    {t('settings.scaleHighBest')}
+                  </button>
+                  <button
+                    className={scaleDraft.direction === 'down' ? 'active' : ''}
+                    onClick={() => setScale({ direction: 'down' })}
+                  >
+                    {t('settings.scaleLowBest')}
+                  </button>
+                </span>
+              </div>
+              <div className="sv2-note">{describeScale(activeScale, t)}</div>
+            </div>
+          )}
+          <div className="sv2-note">
+            {mode === 'custom' ? t('settings.gradeNoteCustom') : t('settings.gradeNote')}
+          </div>
+          {/* v1.14 Item 2 — the other half of the /20 request. The person who
+              asked had not tried Custom and had no reason to think it was for
+              them; a scale they recognise, named in the note they are already
+              reading, is the whole fix. */}
+          {mode !== 'custom' && <div className="sv2-note">{t('settings.gradeCustomHint')}</div>}
+        </div>
+
+        {/* ── Period history (Archive) ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('history.title')}</div>
+          <PeriodHistory courses={state.courses} grades={grades} mode={mode} />
+          <div className="sv2-note">{t('history.note')}</div>
+        </div>
+
+        {/* ── Your data — GDPR Art. 17 / 20 ─────────────────────────────
+             Deliberately buttons rather than a "write to us" address: a right
+             the user has to request is a right most of them never exercise. */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.yourData')}</div>
+          <div className="sv2-note">{t('settings.yourDataNote')}</div>
+          {/* AI debrief opt-in. Off by default — flipping it on is the consent,
+              and the note you type is exactly what gets sent. */}
+          <div className="sv2-row">
+            <span className="sv2-row-label">{t('settings.aiDebrief')}</span>
+            <span className="sv2-row-value">
+              <span className="sv2-mode">
+                <button
+                  className={!state.aiEnabled ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_AI_ENABLED', on: false })}
+                >
+                  {t('settings.aiOff')}
+                </button>
+                <button
+                  className={state.aiEnabled ? 'active' : ''}
+                  onClick={() => dispatch({ type: 'SET_AI_ENABLED', on: true })}
+                >
+                  {t('settings.aiOn')}
+                </button>
+              </span>
+            </span>
+          </div>
+          <div className="sv2-note">
+            {state.aiEnabled ? t('settings.aiDebriefOnNote') : t('settings.aiDebriefOffNote')}
+          </div>
+          {/* Free-tier disclosure — informed consent belongs at the switch,
+              not only in PRIVACY.md. */}
+          <div className="sv2-note">{t('settings.aiTrainingNote')}</div>
+          {/* v1.16 (limecore#16) — off by default, accounts only; the note is
+              the consent text the privacy policy (NCC#50) relies on. */}
+          <ErrorReportsRow />
+          <div className="sv2-action">
+            <button className="btn-outline" onClick={onExport}>
+              {t('settings.exportData')}
+            </button>
+            <a
+              className="btn-outline"
+              href="https://limecore.dev/privacy"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('settings.privacyPolicy')}
+            </a>
+          </div>
+          <div className="sv2-danger">
+            <div className="sv2-danger-title">{t('settings.dangerZone')}</div>
+            <div className="sv2-note">{t('settings.deleteAccountNote')}</div>
+            <button
+              className="btn-outline sv2-danger-btn"
+              onClick={onDeleteAccount}
+              disabled={deleting}
+            >
+              {deleting ? t('settings.deletingAccount') : t('settings.deleteAccount')}
+            </button>
+          </div>
+        </div>
+
+        {/* ── Support ──
+            Was "a link out, nothing more. No entitlements, no supporter-only
+            features, no webhook." That stopped being true in v1.12: the Ko-fi
+            webhook, the matcher and the entitlement reader all ship, so this
+            section now also shows a supporter their badge (Item 6c) and offers
+            the alt-email self-link (Item 6b).
+            Still true, and worth keeping true: nothing here GATES the app. A
+            user who never clicks any of it loses no functionality. */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.support')}</div>
+          <div className="sv2-note">{t('settings.supportDevSub')}</div>
+          <div className="sv2-action">
+            <a
+              className="btn-outline"
+              href="https://ko-fi.com/limecorestudio"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('settings.supportDev')}
+            </a>
+          </div>
+          <SupporterBlock session={session} showFlash={showFlash} />
+          {/* Sits with Ko-fi rather than in its own section because the two are
+              about to be connected: Ko-fi's Discord bot maps a membership tier
+              onto a Discord role. Same shape as the link above — an ordinary
+              outbound link, no SDK, no embed, nothing fetched from discord.com
+              unless the user taps it. */}
+          <div className="sv2-note">{t('settings.discordSub')}</div>
+          <div className="sv2-action">
+            <a
+              className="btn-outline"
+              href="https://discord.gg/g8VuB4yXHY"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('settings.discord')}
+            </a>
+          </div>
+        </div>
+
+        {/* ── About ── */}
+        <div className="sv2-section">
+          <div className="sv2-section-title">{t('settings.about')}</div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">Study Buddy</span>
+            <span className="sv2-row-value">v{appVersion}</span>
+          </div>
+          <div className="sv2-row">
+            <span className="sv2-row-label">Developer</span>
+            <span className="sv2-row-value">shourya Vaidhya jain</span>
+          </div>
+          {IS_DESKTOP && <DesktopUpdateRow />}
+          {Capacitor.getPlatform() === 'android' && <FdroidUpdateRow />}
+          <details className="sv2-tech">
+            <summary>{t('settings.techDetails')}</summary>
+            <div className="sv2-tech-grid">
+              <div className="sv2-tech-item"><span>Developer</span><span>shourya Vaidhya jain</span></div>
+              <div className="sv2-tech-item"><span>Contact</span><span><a className="sv2-link" href="mailto:parvx18@gmail.com">parvx18@gmail.com</a></span></div>
+              <div className="sv2-tech-item"><span>{t('settings.bundle')}</span><span>com.StudyDesk.app</span></div>
+              <div className="sv2-tech-item"><span>{t('settings.backend')}</span><span>Supabase (hkktorzh…)</span></div>
+              {userId && <div className="sv2-tech-item"><span>{t('settings.userId')}</span><span title={userId}>{userIdShort}</span></div>}
+              <div className="sv2-tech-item"><span>{t('settings.source')}</span><span><a className="sv2-link" href="https://github.com/Ben10isBack/Study-Buddy" target="_blank" rel="noopener noreferrer">github.com/Ben10isBack/Study-Buddy</a></span></div>
+              <div className="sv2-tech-item"><span>{t('settings.license')}</span><span>MIT</span></div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// v1.16 (limecore#16) — "Send error reports", the same Off/On pair as every
+// other Settings switch. Off by default; the note under it is the consent text.
+function ErrorReportsRow() {
+  const { t } = useTranslation();
+  const on = useErrorReportsEnabled();
+  return (
+    <>
+      <div className="sv2-row">
+        <span className="sv2-row-label">{t('settings.errorReports')}</span>
+        <span className="sv2-row-value">
+          <span className="sv2-mode">
+            <button className={!on ? 'active' : ''} onClick={() => setErrorReportsEnabled(false)}>
+              {t('settings.aiOff')}
+            </button>
+            <button className={on ? 'active' : ''} onClick={() => setErrorReportsEnabled(true)}>
+              {t('settings.aiOn')}
+            </button>
+          </span>
+        </span>
+      </div>
+      <div className="sv2-note">{t('settings.errorReportsNote')}</div>
+    </>
+  );
+}

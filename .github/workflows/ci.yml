@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'claude/**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Scans every tracked file, not just staged ones — nothing is staged in
+      # CI, so the default (hook) mode would pass vacuously.
+      #
+      # This matters more here than in the sibling repos: StudyDesk is already
+      # merged into F-Droid with AutoUpdateMode: Version, so a new tag ships to
+      # users with no MR review in the loop. CI is the only gate.
+      - name: Secret scan
+        run: node scripts/check-secrets.mjs --all
+
+      # v1.17 (limecore#20): no shipped image over 100 KB unless allow-listed,
+      # and no Android resource as both .png and .webp.
+      - name: Asset gate
+        run: node scripts/check-assets.mjs
+
+      # The working agreement calls this gate mandatory. Two releases shipped
+      # broken because it was skipped by hand; this makes it structural.
+      # v1.12 Item 1. StudyDesk shipped `android.captureInput: true` for months,
+      # which made CJK text entry impossible, because nobody has ever typed
+      # Chinese into any of these apps. A one-line fix does not stop that
+      # recurring; failing the build does.
+      # Issue #53 — F-Droid could not build the tag. Eleven tracked files were
+      # stored with CRLF, and android/gradlew-quiet had a CRLF shebang, so the
+      # kernel looked for an interpreter named `/bin/bash\r`. Checks the stored
+      # blobs, not the working tree: a Windows checkout legitimately has CRLF
+      # on disk, and a tag only ever carries the blob.
+      - name: Line endings
+        run: npm run check:line-endings
+
+      - name: IME guard
+        run: node scripts/check-ime.mjs
+
+      # Static, no browser, so it runs early and covers EVERY component —
+      # including views the boot gate's tab sweep does not reach. A dependency
+      # array evaluated during render that names a value declared further down
+      # throws a TDZ ReferenceError and blanks the app. That has shipped three
+      # times (v1.10 App.jsx, v1.13 App.jsx, v1.13 TimerView.jsx) with the
+      # build and eslint green each time.
+      - name: Dependency TDZ guard
+        run: npm run check:dep-tdz
+
+      # The v1.13 incident that motivates the two steps below: `vite build`
+      # failed on the dev machine, dist/ kept its two-day-old contents, `cap
+      # sync` copied that stale dist/ into the APK, and `assembleRelease`
+      # succeeded. The result was a 4,305,085-byte APK labelled 1.13.0 that
+      # was 8 bytes different from v1.12.1 and contained none of the v1.13
+      # code. The stale-asset gate passed it, because that gate diffs the APK
+      # against dist/ and never asks whether dist/ is fresh.
+      #
+      # CI was green throughout and CI was not wrong: it runs `npm ci`, so it
+      # never reproduces a stale node_modules. What CI was missing is the two
+      # checks after this one.
+      - name: Build gate
+        run: npm run build
+
+      # v1.17 (limecore#13). The JS a cold start loads has a budget, so a static
+      # import of a lazy screen or a heavy library cannot quietly undo the
+      # splitting. See the header of scripts/check-bundle-size.mjs.
+      - name: Bundle size gate
+        run: npm run check:bundle-size
+
+      - name: Dist freshness gate
+        run: npm run check:dist-fresh
+
+      # A native Capacitor plugin can be in package.json, in package-lock.json,
+      # resolvable by Rollup, and still absent from the generated Gradle files
+      # if nobody ran `cap sync` — in which case it is not in the APK at all and
+      # every gate above stays green. `@capacitor/status-bar` shipped that way
+      # in v1.13: theme.js imported it, the build passed, and restyling the
+      # Android status bar was a silent no-op on device.
+      - name: Native plugin registration
+        run: npm run check:native-plugins
+
+      # The boot gate. Loads the built bundle in a real browser and asserts the
+      # app actually renders — see scripts/check-boot.mjs for the incident.
+      #
+      # v1.13 cold-launched to a completely blank screen on device: `#root`
+      # present, zero children, React never committed anything. The cause was a
+      # temporal-dead-zone read of `session` from a dependency array declared
+      # above its useState. The identical bug shipped in v1.10.
+      #
+      # Every gate above stays GREEN on that bug. `npm run build` succeeds
+      # because it is valid JavaScript and the error is at runtime; eslint's
+      # react-hooks rules check which values a dep array lists, not whether they
+      # are initialised; `npm run dev` does not reproduce it because unbundled
+      # ESM evaluates differently from the production chunk; and the Vercel
+      # preview reports Ready because the BUILD succeeded, not because anyone
+      # loaded the page. Verified by reverting the fix: build 0, lint 0, this
+      # step 1.
+      #
+      # Only a production build loaded in a browser sees it, which is this step.
+      - name: Install Chromium for the boot gate
+        run: npx playwright install --with-deps chromium
+
+      - name: Boot gate
+        run: npm run check:boot
+
+      # There is no TypeScript here by design, so lint is the only static
+      # check this app has. `npm run lint` also runs scripts/check-logic.mjs,
+      # which is where 356 of this repo's logic assertions already live.
+      - name: Lint
+        run: npm run lint
+
+      # v1.16 (limecore#11). Vitest covers the two modules check-logic.mjs does
+      # not reach: merge.js (the LWW that decides which device's edit survives)
+      # and gpa.js (the number a student opens the app for, mirrored in NCC).
+      # The two harnesses are deliberately not merged here — consolidating them
+      # is code-health work, not a prerequisite for it (limecore#12).
+      - name: Test gate
+        run: npm test

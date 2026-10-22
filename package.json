@@ -1,0 +1,103 @@
+{
+  "name": "study-buddy",
+  "private": true,
+  "version": "1.18.2",
+  "type": "module",
+  "license": "MIT",
+  "author": "shourya Vaidhya jain <parvx18@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ben10isBack/Study-Buddy.git"
+  },
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "prepare": "git config core.hooksPath .githooks || true",
+    "postinstall": "patch-package --error-on-fail --error-on-warn",
+    "check:ime": "node scripts/check-ime.mjs",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs --all",
+    "check:contrast": "node scripts/check-contrast.mjs",
+    "check:logic": "node scripts/check-logic.mjs",
+    "check:notebook-colours": "node scripts/check-notebook-colours.mjs",
+    "check:native-plugins": "node scripts/check-native-plugins.mjs",
+    "check:dist-fresh": "node scripts/check-dist-fresh.mjs",
+    "check:desktop-paths": "node scripts/check-desktop-paths.mjs",
+    "check:boot": "node scripts/check-boot.mjs",
+    "check:dep-tdz": "node scripts/check-dep-tdz.mjs",
+    "check:line-endings": "node scripts/check-line-endings.mjs",
+    "check:assets": "node scripts/check-assets.mjs",
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "node scripts/check-line-endings.mjs && node scripts/check-ime.mjs && node scripts/check-dep-tdz.mjs && node scripts/check-contrast.mjs && node scripts/check-notebook-colours.mjs && node scripts/check-logic.mjs && eslint . --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview",
+    "cap:sync": "npm run build && npm run check:dist-fresh && cap sync android",
+    "electron:dev": "electron .",
+    "electron:build": "npm run build && npm run check:dist-fresh && node electron/build.cjs --win --publish never && npm run check:desktop-paths"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.2.0",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/browser": "^8.0.3",
+    "@capacitor/cli": "^8.2.0",
+    "@capacitor/core": "^8.2.0",
+    "@capacitor/local-notifications": "^8.0.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/status-bar": "^8.0.3",
+    "@supabase/supabase-js": "^2.106.0",
+    "@vercel/analytics": "^2.0.1",
+    "electron-updater": "^6.8.9",
+    "i18next": "^26.4.2",
+    "lucide-react": "^1.52.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-i18next": "^17.0.16"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.26",
+    "globals": "^16.5.0",
+    "patch-package": "^8.0.1",
+    "playwright": "^1.49.1",
+    "sharp": "^0.35.3",
+    "vite": "^7.3.1",
+    "vitest": "^3.2.7"
+  },
+  "build": {
+    "appId": "com.studybuddy.desktop",
+    "productName": "Study Buddy",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!**/node_modules/**/{android,ios}/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "resources/installer.nsh",
+      "artifactName": "Study-Buddy-Desktop-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Ben10isBack",
+        "repo": "Study-Buddy"
+      }
+    ]
+  }
+}

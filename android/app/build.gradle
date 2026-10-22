@@ -1,0 +1,93 @@
+apply plugin: 'com.android.application'
+
+// Load signing credentials from keystore.properties (never committed — see .gitignore)
+def keystorePropertiesFile = rootProject.file("app/keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace = "com.StudyDesk.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.StudyDesk.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 35
+        versionName "1.18.2"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    // The Android Gradle Plugin injects a Google-encrypted "Dependency
+    // metadata" blob into the APK signing block by default. It is
+    // non-reproducible and F-Droid's `check apk` scan rejects it
+    // ("Found extra signing block 'Dependency metadata'"). Disable it.
+    dependenciesInfo {
+        includeInApk false
+        includeInBundle false
+    }
+    // signingConfigs MUST be declared before buildTypes references
+    // signingConfigs.release — Gradle resolves the container eagerly at
+    // configuration time. Previously this block sat after buildTypes, so a
+    // release build with keystore.properties present threw "Could not get
+    // unknown property 'release'". It never surfaced because keystore.properties
+    // was absent (guard false), so StudyDesk had never produced a signed
+    // release. Mirrors NCC/LimeLog ordering.
+    signingConfigs {
+        release {
+            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+            storePassword keystoreProperties['storePassword']
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+        }
+    }
+    buildTypes {
+        release {
+            // v1.17 (limecore#19): R8 shrinks and obfuscates the Java/Kotlin
+            // code, and the resource shrinker drops what nothing references.
+            // Keep rules: proguard-rules.pro. Both only run in release builds,
+            // so a missing rule shows up only there: device-test the release
+            // APK, and keep build/outputs/mapping/release/mapping.txt with
+            // each release so native stack traces can be read back.
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// NOTE: Intentionally NO Google Play Services / google-services plugin block here.
+// StudyDesk is built to be F-Droid compatible — no GMS, no Firebase, no GSF.
+// Google sign-in is implemented as a pure AppAuth-style web OAuth flow via
+// @capacitor/browser + a custom URI scheme deep link (see AndroidManifest).
+// Local notifications use the AOSP AlarmManager / NotificationManager, not FCM.
+// If FCM is ever needed, gate it behind a product flavor so the OSS flavor
+// stays GMS-free.

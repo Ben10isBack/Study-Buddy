@@ -1,0 +1,150 @@
+import { createClient } from '@supabase/supabase-js';
+import { Preferences } from '@capacitor/preferences';
+import { Capacitor } from '@capacitor/core';
+import { App as CapacitorApp } from '@capacitor/app';
+import { DESKTOP_REDIRECT_URL } from './desktop.js';
+import { fetchNotingServerTime } from './serverClock.js';
+
+// Supabase backend — overridable at build time via Vite env vars so the app
+// can be re-built against a self-hosted Supabase instance without forking
+// (see `.env.example`). The defaults below point at the canonical StudyDesk
+// project shared with Nexus Command Center, so the public build keeps working.
+const SUPABASE_URL =
+  import.meta.env.VITE_SUPABASE_URL ||
+  'https://hkktorzhaqnfqsnlstda.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY =
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  'sb_publishable_ykHLJ4QuFm2HKXACygwezw_c_cvR_yf';
+
+// Capacitor Preferences uses Android SharedPreferences — more durable than
+// WebView localStorage, which Android can evict under memory pressure.
+const capacitorStorage = {
+  async getItem(key) {
+    try {
+      const { value } = await Preferences.get({ key });
+      return value;
+    } catch {
+      return localStorage.getItem(key);
+    }
+  },
+  async setItem(key, value) {
+    try {
+      await Preferences.set({ key, value });
+    } catch {
+      localStorage.setItem(key, value);
+    }
+  },
+  async removeItem(key) {
+    try {
+      await Preferences.remove({ key });
+    } catch {
+      localStorage.removeItem(key);
+    }
+  },
+};
+
+const isNative = Capacitor.isNativePlatform();
+// Also read by readStoredSession() below.
+const SESSION_STORAGE_KEY = 'studydesk-supabase-session';
+
+// v1.18.1 (StudyDesk#144): every Supabase response carries the server's
+// `Date` header; serverClock.js turns it into this device's clock offset.
+export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+  global: { fetch: fetchNotingServerTime },
+  auth: {
+    storage: isNative ? capacitorStorage : undefined,
+    storageKey: SESSION_STORAGE_KEY,
+    autoRefreshToken: true,
+    persistSession: true,
+    // Native handles the OAuth callback manually via the `appUrlOpen` deep-link
+    // listener in AuthGate.jsx, so supabase-js must not race it. On WEB there is
+    // no deep-link listener — nothing else will ever consume the `?code=` — so
+    // leaving this false there dropped the session even when the redirect was
+    // correct. The second half of the same bug as OAUTH_REDIRECT_URL below.
+    detectSessionInUrl: !isNative,
+    flowType: 'pkce',
+  },
+});
+
+// v1.18.1 (StudyDesk#142, #139) — the session supabase-js stored, read and
+// removed without the network. Offline with an expired access token,
+// getSession() refreshes first and retries for ~50 s before answering null;
+// App opens on this stored copy after a short head start instead. And auth-js
+// only removes the session after its logout call succeeds, so an offline
+// sign-out removes it here. Same storage and key as the client above.
+const sessionStorage_ = isNative
+  ? capacitorStorage
+  : {
+      getItem: async (k) => localStorage.getItem(k),
+      removeItem: async (k) => localStorage.removeItem(k),
+    };
+
+export async function readStoredSession() {
+  try {
+    const raw = await sessionStorage_.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.user?.id || !parsed.refresh_token) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearStoredSession() {
+  try {
+    await sessionStorage_.removeItem(SESSION_STORAGE_KEY);
+  } catch { /* nothing stored, or storage unavailable */ }
+}
+
+// ── Mobile session durability (v1.10) ───────────────────────────────────
+// Ported from NCC's supabase.ts, which got this in v1.7; this app never did.
+// supabase-js drives its token auto-refresh loop off browser visibility /
+// `online` events. In a Capacitor Android WebView those fire unreliably once
+// the app is paused, so a backgrounded app can sail past the access-token
+// expiry without refreshing. Driving the loop off the native app lifecycle
+// instead is Supabase's documented mobile fix: stop on background, (re)start
+// on foreground. startAutoRefresh() also runs an immediate tick, so a token
+// that expired while backgrounded is refreshed the moment the app returns.
+if (isNative) {
+  void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+    if (isActive) {
+      void supabase.auth.startAutoRefresh();
+    } else {
+      void supabase.auth.stopAutoRefresh();
+    }
+  });
+}
+
+// NOTE: URI scheme must be lowercase. Supabase normalizes redirect URLs
+// per RFC 3986 (which says the scheme part of a URI is case-insensitive
+// and SHOULD be lowercased), so even if we send mixed-case here Supabase
+// rewrites it to lowercase. Android scheme matching IS case-sensitive,
+// so the AndroidManifest intent filter and this constant must match the
+// lowercased form. The Android package/bundle id (com.StudyDesk.app) is
+// unrelated and stays as-is.
+//
+// WEB uses the app's own origin instead. The constant used to be the native
+// scheme unconditionally, and a BROWSER cannot navigate to
+// `com.studydesk.app://login-callback` — Supabase fell back to the project's
+// Site URL (limecore.dev/confirmed), so the session landed there rather than in
+// the app and the user stayed signed out. Broke on localhost; would have broken
+// identically on any hosted web build.
+//
+// `window.location.origin` rather than a hardcoded host, so dev
+// (http://localhost:5173) and any deployed origin both work with no build flag
+// — but every origin must ALSO be listed in Supabase's
+// Auth -> URL Configuration -> Redirect URLs, or Supabase silently falls back
+// to the Site URL again and the symptom returns unchanged.
+//
+// DESKTOP is the third case, and v1.12 did not have it. In Electron this file's
+// `isNative` is false (there is no Capacitor bridge) and `window.location.origin`
+// is `studydesk://app` — a custom scheme, which Supabase's redirect allow-list
+// cannot hold, so every desktop sign-in fell back to the Site URL and parked the
+// app's own window on the marketing site with no route back. The desktop shell
+// now listens on a fixed loopback port and passes that URL in; see
+// `electron/main.cjs`. A null means the listener could not bind, in which case
+// the origin fallback below is no worse than what shipped.
+export const OAUTH_REDIRECT_URL = isNative
+  ? 'com.studydesk.app://login-callback'
+  : DESKTOP_REDIRECT_URL || `${window.location.origin}/`;

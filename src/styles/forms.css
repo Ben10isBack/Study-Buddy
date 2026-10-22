@@ -1,0 +1,166 @@
+/* Shared form controls, inputs, buttons, modals.
+   Extracted from App.jsx (SD-6), where it lived as the `css2` template
+   literal. Verbatim — no rules were merged, reordered or renamed, so this
+   commit changes where the CSS lives and nothing about what it does. */
+
+/* ── Shared components ── */
+/* v1.6.2 — input[type=password] was missing from this list, so the password
+   field on the auth screen got none of the shared sizing (no width:100%, no
+   padding, no border) and rendered visibly smaller than the email field next
+   to it. Added here rather than in AuthGate so every password input matches.
+
+   v1.10 — the same omission again, this time `time` and `number`. The lesson
+   editor puts a day select and two time inputs in one three-column row, and
+   the times rendered at the browser's default size beside a fully-styled
+   select: different height, different border, not on a shared baseline. That
+   is the whole of "the time pickers are smaller than the day picker and they
+   dont line up". `number` had it too (9 inputs across the app) and is fixed in
+   the same pass rather than waiting to be reported separately.
+
+   `color` and `file` are deliberately still out: a swatch and a file button
+   are not text fields, and width:100% with 9px padding would make both wrong.
+   This list is opt-in by design — anything new added to a form needs adding
+   here too, which is the trap that has now caught three input types. */
+input[type=text],input[type=password],input[type=date],input[type=time],input[type=number],select,textarea{background:var(--surface);border:1px solid var(--border2);color:var(--text);padding:9px 12px;font-family:var(--font-sans);font-size:13px;border-radius:4px;outline:none;transition:border-color 0.15s;width:100%;}
+input[type=text]:focus,input[type=password]:focus,input[type=date]:focus,input[type=time]:focus,input[type=number]:focus,select:focus,textarea:focus{border-color:var(--focus-ring);}
+textarea{resize:vertical;min-height:80px;line-height:1.6;}
+/* The native dropdown arrow is painted INSIDE the padding box, so symmetric
+   padding lets the value slide under it. Invisible at full width, obvious in a
+   narrow column — the day abbreviation was sitting beneath the chevron.
+   `padding-inline-end` rather than `padding-right` so RTL, where the arrow
+   moves to the other side, gets the clearance on the correct side. */
+select{cursor:pointer;padding-inline-end:30px;}
+/* Chrome/WebView give date and time inputs an internal indicator with its own
+   margin, which pushes an already-narrow field's text off-centre. Trimming the
+   trailing padding to match keeps the text optically centred against the
+   select beside it rather than shunted left. */
+input[type=date],input[type=time]{padding-inline-end:8px;}
+/* One explicit height for every text-like control, because they never agreed:
+   measured in the lesson editor, a text input was 37px, a select 39px and a
+   time input 39.64px. Each was picking its own intrinsic height from padding
+   plus whatever the UA thinks its content is, and a select in particular
+   ignores line-height entirely — so no amount of padding tuning makes the
+   three converge. Stacked in a column nobody notices 2px; side by side in the
+   day/start/end row it reads as controls that do not line up, which is exactly
+   what was reported. 40px also lands closer to the 48dp touch guidance than
+   the 37px it replaces. textarea re-asserts its own 80px below. */
+input[type=text],input[type=password],input[type=date],input[type=time],input[type=number],select{min-height:40px;}
+.input-group{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+.input-label{font-family:var(--font-mono);font-size:10px;letter-spacing:0.1em;color:var(--muted);text-transform:uppercase;}
+.input-row{display:flex;gap:8px;align-items:flex-start;}
+.btn{background:var(--accent);color:var(--accent-on);border:none;padding:9px 18px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:4px;transition:opacity 0.1s;white-space:nowrap;font-weight:500;}
+.btn:hover{opacity:0.8;}.btn-sm{padding:6px 12px;font-size:10px;}
+/* v1.6.2 — there was no :disabled rule at all, so a blocked .btn rendered as a
+   very slightly darker button that silently swallowed taps. That is exactly how
+   the v1.6.1 code-confirmation screen was reported as "the button darkens and
+   nothing happens". Make disabled look disabled everywhere, not just there. */
+.btn:disabled,.btn[disabled]{opacity:0.4;cursor:not-allowed;}
+.btn:disabled:hover,.btn[disabled]:hover{opacity:0.4;}
+.btn-outline{background:transparent;color:var(--muted);border:1px solid var(--border2);padding:7px 14px;font-family:var(--font-mono);font-size:10px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:4px;transition:all 0.1s;}
+.btn-outline:hover{color:var(--text);border-color:var(--text);}
+.btn-danger-text{background:none;border:none;color:var(--muted2);cursor:pointer;font-size:16px;padding:2px 6px;transition:color 0.1s;}
+.btn-danger-text:hover{color:var(--danger);}
+.btn-red{background:var(--danger);color:var(--danger-on);border:none;padding:8px 16px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;border-radius:4px;transition:opacity 0.1s;}
+.btn-red:hover{opacity:0.85;}
+
+/* v1.10 — destructive confirmation, used by the course-delete step.
+   Its own block rather than another item in the footer row: the question needs
+   a full line to sit on, and squeezing it in beside Save/Cancel is what made it
+   "not quite fit". Tinted panel so the state is obvious without a modal-on-modal. */
+.confirm-delete{margin-top:12px;padding:14px;border:1px solid var(--confirm-border);background:var(--confirm-bg);border-radius:5px;}
+.confirm-delete-q{font-family:var(--font-mono);font-size:11px;letter-spacing:0.06em;line-height:1.5;color:var(--danger);text-transform:uppercase;text-align:center;margin-bottom:12px;}
+.confirm-delete-actions{display:flex;gap:8px;}
+/* Both answers to the same geometry — the size difference was two classes
+   disagreeing, not a decision. Colour carries the weight instead. Wrapping is
+   left on: the longest translation of "Yes, delete" is not English. */
+/* The transparent border is not decoration: .btn-outline carries a 1px border
+   and .btn-red carries none, which left the two 2px apart even under flex:1.
+   Matching the box makes them identical rather than nearly so. */
+.confirm-delete-actions>.btn-red,
+.confirm-delete-actions>.btn-outline{flex:1;padding:9px 12px;font-size:10px;text-align:center;white-space:normal;box-sizing:border-box;}
+.confirm-delete-actions>.btn-red{border:1px solid transparent;}
+.section-label{font-family:var(--font-mono);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:14px;display:flex;align-items:center;gap:10px;}
+/* order:1 puts the hairline BETWEEN the label and the action, so the button
+   lands hard against the right edge. It used to render label -> button -> rule,
+   which left each Add button floating at a different x depending on how long
+   its section name was - three buttons, three positions, on one screen. */
+.section-label::after{content:'';flex:1;height:1px;background:var(--border);order:1;}
+.section-label .btn,.section-label .btn-outline{order:2;flex:0 0 auto;}
+/* v1.14 Item 3 — the heading text is a button now. It inherits every type
+   property from `.section-label` rather than restating them, so a theme that
+   restyles the label (Stacks and Slate both do) restyles the toggle with it
+   and cannot leave the two disagreeing. */
+.section-toggle{font:inherit;letter-spacing:inherit;text-transform:inherit;color:inherit;background:none;border:none;padding:0;margin:0;cursor:pointer;display:inline-flex;align-items:center;gap:7px;min-height:24px;}
+.section-toggle:hover{color:var(--text);}
+/* The chevron sits before the word here, not after it as on a course card, so
+   the label's own margin rule has to be undone. */
+.section-toggle .course-card-chevron{margin-inline-start:0;}
+.asgn-item{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;background:var(--surface);border:1px solid var(--border);border-radius:5px;margin-bottom:8px;box-shadow:var(--shadow);}
+.asgn-item.done{opacity:0.45;}
+.asgn-check{width:17px;height:17px;border:1.5px solid var(--border2);border-radius:3px;flex-shrink:0;margin-top:2px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;}
+.asgn-check:hover{border-color:var(--text);}
+.asgn-check.checked{background:var(--text);border-color:var(--text);}
+.asgn-check.checked::after{content:'';display:block;width:4px;height:7px;border:2px solid var(--bg);border-top:none;border-left:none;transform:rotate(45deg) translate(-1px,-1px);}
+.asgn-body{flex:1;min-width:0;}
+.asgn-title{font-size:14px;font-weight:500;margin-bottom:4px;}
+.asgn-title.done{text-decoration:line-through;color:var(--muted);}
+.asgn-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.asgn-course{font-family:var(--font-mono);font-size:10px;font-weight:500;padding:2px 7px;border-radius:20px;}
+.asgn-type{font-family:var(--font-mono);font-size:10px;color:var(--muted);}
+.asgn-due{font-family:var(--font-mono);font-size:10px;font-weight:500;}
+.asgn-notes{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5;}
+.tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-family:var(--font-mono);font-size:10px;font-weight:500;}
+.tag-exam{background:var(--exam-bg);color:var(--exam);}
+.action-item{display:flex;align-items:flex-start;gap:10px;padding:11px 14px;background:var(--surface);border:1px solid var(--border);border-radius:5px;margin-bottom:6px;box-shadow:var(--shadow);}
+.action-item.done{opacity:0.4;}
+.action-item.suggested{border-style:dashed;background:rgba(26,92,158,0.04);}
+.action-text{flex:1;font-size:13px;line-height:1.5;}
+.action-text.done{text-decoration:line-through;color:var(--muted);}
+.bucket-section{margin-bottom:24px;}
+.bucket-header{font-family:var(--font-mono);font-size:10px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:10px;}
+.bucket-header::after{content:'';flex:1;height:1px;background:var(--border);}
+.bucket-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.modal-overlay{position:fixed;inset:0;background:rgba(26,24,20,0.32);z-index:100;display:flex;align-items:center;justify-content:center;animation:fadeOverlay 200ms var(--ease-paper);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);}
+.modal{background:rgba(250,248,244,0.82);backdrop-filter:blur(16px) saturate(1.05);-webkit-backdrop-filter:blur(16px) saturate(1.05);border:1px solid var(--border);border-top:1px solid rgba(250,248,244,0.95);border-radius:8px;padding:28px;width:500px;max-width:94vw;max-height:90vh;overflow-y:auto;box-shadow:0 12px 36px rgba(26,24,20,0.18),0 1px 0 rgba(255,255,255,0.7) inset;animation:slideModal 280ms var(--ease-settle);}
+@keyframes fadeOverlay{from{opacity:0;}to{opacity:1;}}
+@keyframes slideModal{from{opacity:0;transform:translateY(10px) scale(0.98);}to{opacity:1;transform:translateY(0) scale(1);}}
+@keyframes page-turn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
+.page-turn{animation:page-turn 160ms var(--ease-page-turn);}
+/* 4px below the bar put the next control - Plan's Assignments header, the
+   Calendar's Month/Week toggle - almost touching it, so the two read as one
+   crowded strip. 18px separates the route picker from the content it is
+   picking. Reported on-device. */
+.timer-subtabs{display:flex;gap:0;border:1px solid var(--border2);border-radius:6px;overflow:hidden;max-width:340px;margin:16px auto 18px;}
+.timer-subtab{flex:1;background:transparent;border:none;padding:8px 10px;font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;cursor:pointer;color:var(--muted);transition:all 0.1s;border-inline-end:1px solid var(--border2);}
+.timer-subtab:last-child{border-inline-end:none;}
+.timer-subtab.active{background:var(--text);color:var(--bg);}
+.modal-title{font-family:var(--font-display);font-size:18px;margin-bottom:20px;}
+.modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+/* v1.12.1 — a modal that refuses to save has to say so. Same visual
+   language as `.auth-error`, which is the one place in the app that was
+   already doing this properly. `[aria-invalid]` marks the field the
+   message is about, so the two read as one statement. */
+.modal-error{background:var(--danger-bg);border:1px solid var(--danger-border);color:var(--danger);padding:10px 12px;border-radius:4px;font-size:12px;margin:2px 0 14px;}
+.modal input[aria-invalid]{border-color:var(--danger);}
+.urgent-banner{background:var(--danger-soft);border:1px solid var(--danger-soft-border);border-radius:5px;padding:12px 16px;margin-bottom:20px;display:flex;align-items:center;gap:10px;font-size:13px;}
+.urgent-banner strong{color:var(--danger);font-family:var(--font-mono);font-size:11px;letter-spacing:0.08em;}
+.empty{color:var(--muted2);font-family:var(--font-mono);font-size:11px;padding:20px 0;}
+.divider{height:1px;background:var(--border);margin:24px 0;}
+/* v1.8 RTL — Unicode arrows are bidi-neutral and are NOT mirrored by the
+   layout engine, so a "next" arrow keeps pointing right in RTL and reads as
+   "back". Mirror them explicitly, and flip the disclosure chevron with them.
+   Applied by class so flat-trend arrows (→ meaning "unchanged") stay put. */
+[dir="rtl"] .rtl-mirror{display:inline-block;transform:scaleX(-1);}
+[dir="rtl"] .course-card-chevron{transform:scaleX(-1);}
+[dir="rtl"] .course-card-chevron.open{transform:scaleX(-1) rotate(-90deg);}
+.flash{position:fixed;bottom:24px;inset-inline-end:24px;background:var(--text);color:var(--bg);padding:10px 18px;font-family:var(--font-mono);font-size:11px;border-radius:4px;animation:fadeup 0.2s ease;z-index:200;}
+/* v1.18.1 (StudyDesk#161) — the account-switch notice: stays until closed. */
+.flash--notice{display:flex;align-items:flex-start;gap:12px;max-width:min(420px,calc(100vw - 28px));line-height:1.5;}
+.flash__close{background:none;border:0;color:inherit;font:inherit;font-size:16px;line-height:1;cursor:pointer;padding:0 2px;}
+@keyframes fadeup{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+@media(max-width:768px){
+  .flash{bottom:calc(72px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom)));inset-inline-end:14px;}
+  .modal-grid{grid-template-columns:1fr;}
+  .input-row{flex-direction:column;align-items:stretch;}
+  .btn,.btn-outline{text-align:center;}
+}
